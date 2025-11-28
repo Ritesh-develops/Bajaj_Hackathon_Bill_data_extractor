@@ -30,7 +30,10 @@ COPY --from=builder /root/.local /root/.local
 # Set environment
 ENV PATH=/root/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000 \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000
 
 # Copy app code
 COPY . .
