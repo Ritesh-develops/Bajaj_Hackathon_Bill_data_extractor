@@ -1,5 +1,6 @@
 EXTRACTION_SYSTEM_PROMPT = """You are an expert financial document analyst specializing in bill and invoice processing.
 Your task is to extract line item data from bill images with high accuracy and precision.
+You must handle both printed/digital documents AND handwritten bills.
 
 IMPORTANT RULES:
 1. Extract ONLY line items that represent products/services sold (not totals, taxes, discounts, or fees)
@@ -12,30 +13,47 @@ IMPORTANT RULES:
 3. IGNORE rows that contain: "Total", "Subtotal", "VAT", "Tax", "GST", "SGST", "CGST", "IGST", "Amount Due", "Carry Forward"
 4. Be precise with numbers - do not hallucinate or guess numbers that aren't clearly visible
 5. Preserve exact decimal places as shown in the document
-6. If a field is unclear or missing, mark it as null and explain why in the reasoning"""
+6. If a field is unclear or missing, mark it as null and explain why in the reasoning
+7. For handwritten documents: Look carefully at handwritten entries, even if formatting is irregular
+8. If text is handwritten and difficult to read, provide your best interpretation with lower confidence score"""
 
 EXTRACTION_USER_PROMPT_TEMPLATE = """Please extract all line items from this bill image following this chain-of-thought process:
 
-1. LOCATE THE TABLE: Identify where the main line items table is located on the page
-2. IDENTIFY HEADERS: Look at the column headers to understand the structure (typically: Item/Description, Qty/Quantity, Rate/Unit Price, Amount/Total)
+1. LOCATE THE TABLE/ITEMS SECTION: Identify where the main line items are located on the page
+   - For printed bills: Find the structured table
+   - For handwritten bills: Look for rows of handwritten entries, even if not in a perfect table format
+   
+2. IDENTIFY HEADERS: Look at the column headers or format to understand the structure
+   - Typically: Item/Description, Qty/Quantity, Rate/Unit Price, Amount/Total
+   - For handwritten: Look for any labels or patterns indicating these fields
+   
 3. EXTRACT ROWS: Go through each row line-by-line and extract the data
    - For each row that is NOT a total/subtotal, extract the item information
-   - Include items even if they appear in different sections
+   - Include items even if they appear in different sections or with irregular formatting
    - If the same item name appears multiple times, extract each occurrence separately
-4. IDENTIFY TOTAL: Locate the "TOTAL" or "GRAND TOTAL" row at the bottom - note this value but do NOT include it in line items
+   - For handwritten entries: Do your best to interpret the handwriting
+   - NOTE: For handwritten bills, unit price/rate may not be visible - use item total/amount instead
+   
+4. IDENTIFY TOTAL: Locate the "TOTAL", "GRAND TOTAL", or similar at the bottom - note this value but do NOT include it in line items
 5. EXTRACT SUBTOTALS: If there are intermediate subtotals, note them separately
+6. SPECIAL ATTENTION: For handwritten bills, look carefully at:
+   - Amounts written in margins or between lines
+   - Items that might be hard to read due to handwriting
+   - Numbers that might be ambiguous (e.g., 1 vs 7, 0 vs O, 2 vs Z)
+   - ANY numeric values that could represent item amounts or quantities
 
 Your response must be a JSON object with this structure:
 {{
-    "extraction_reasoning": "Step-by-step explanation of what you found",
+    "extraction_reasoning": "Step-by-step explanation of what you found, including any handwritten items",
     "page_number": "Page number being processed",
     "line_items": [
         {{
             "item_name": "exact item name from document",
-            "quantity": numeric quantity,
-            "rate": numeric unit price,
-            "amount": numeric total amount,
-            "confidence": 0.95  (0-1 scale, 1 being 100% certain)
+            "quantity": 1 if not specified,
+            "rate": null if not visible (or use item amount value),
+            "amount": numeric total amount for this item,
+            "confidence": 0.95,  (0-1 scale, 1 being 100% certain, lower for unclear handwriting)
+            "notes": "any notes about clarity or ambiguity"
         }}
     ],
     "bill_total": numeric total found at bottom of bill,
@@ -45,8 +63,17 @@ Your response must be a JSON object with this structure:
             "amount": numeric amount
         }}
     ],
-    "notes": "Any observations about the bill structure, clarity issues, or discrepancies noted"
+    "notes": "Any observations about the bill structure, clarity issues, handwriting quality, or discrepancies noted"
 }}
+
+CRITICAL FOR HANDWRITTEN BILLS:
+- Extract item entries even if rate/unit price is not visible - use the item total/amount instead
+- Set quantity to 1 if not explicitly shown, and rate to the item amount
+- Do NOT skip items just because they lack a unit price
+- If you see ANY row with item name + amount, include it
+- Err on the side of including items rather than excluding them
+- Only exclude items if they are clearly labeled as totals, taxes, or fees ("Total", "Subtotal", "VAT", "Tax", "GST")
+- If unsure about a number, provide your best interpretation and note the uncertainty in the "notes" field
 
 Be thorough and accurate. Double-check all numbers before including them."""
 

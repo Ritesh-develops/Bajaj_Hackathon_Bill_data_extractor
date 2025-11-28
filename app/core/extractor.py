@@ -295,6 +295,14 @@ class ExtractionOrchestrator:
             
             if not raw_items:
                 logger.warning(f"No items extracted from page {page_no}")
+                logger.info(f"Extraction notes: {extraction_result.get('notes')}")
+                logger.info(f"Extraction reasoning: {extraction_result.get('extraction_reasoning')}")
+                
+                # For debugging: return empty but preserve metadata
+                metadata['warnings'].append("No line items found in document")
+                metadata['extraction_notes'] = extraction_result.get('notes', '')
+                metadata['extraction_reasoning'] = extraction_result.get('extraction_reasoning', '')[:500]  # First 500 chars
+                
                 return [], Decimal('0.00'), metadata
             
             logger.info(f"Phase 3: Validating and cleaning {len(raw_items)} items")
@@ -379,11 +387,16 @@ class ExtractionOrchestrator:
         
         for item in items:
             try:
+                # Handle rate being null (common for handwritten bills)
+                rate_value = item.get('rate')
+                if rate_value is None:
+                    rate_value = 0
+                
                 converted_item = {
                     'item_name': str(item.get('item_name', '')),
-                    'item_quantity': Decimal(str(item.get('quantity', 0))),
-                    'item_rate': Decimal(str(item.get('rate', 0))),
-                    'item_amount': Decimal(str(item.get('item_amount', 0)))
+                    'item_quantity': Decimal(str(item.get('quantity', 1))),  # Default to 1 for handwritten
+                    'item_rate': Decimal(str(rate_value)),
+                    'item_amount': Decimal(str(item.get('amount', 0)))  # Use 'amount' key from Gemini response
                 }
                 converted.append(converted_item)
             except Exception as e:
@@ -399,10 +412,15 @@ class ExtractionOrchestrator:
             action = correction.get('action', '').lower()
             
             if action == 'add':
+                # Handle rate being null for handwritten items
+                rate_value = correction.get('rate', 0)
+                if rate_value is None:
+                    rate_value = 0
+                    
                 items.append({
                     'item_name': correction.get('item_name'),
-                    'item_quantity': Decimal(str(correction.get('quantity', 0))),
-                    'item_rate': Decimal(str(correction.get('rate', 0))),
+                    'item_quantity': Decimal(str(correction.get('quantity', 1))),  # Default to 1
+                    'item_rate': Decimal(str(rate_value)),
                     'item_amount': Decimal(str(correction.get('amount', 0)))
                 })
             
@@ -415,9 +433,14 @@ class ExtractionOrchestrator:
             elif action == 'modify':
                 for item in items:
                     if item.get('item_name') == correction.get('item_name'):
+                        # Handle rate being null
+                        rate_value = correction.get('rate')
+                        if rate_value is None:
+                            rate_value = item.get('item_rate', 0)
+                        
                         item.update({
                             'item_quantity': Decimal(str(correction.get('quantity', item['item_quantity']))),
-                            'item_rate': Decimal(str(correction.get('rate', item['item_rate']))),
+                            'item_rate': Decimal(str(rate_value)),
                             'item_amount': Decimal(str(correction.get('amount', item['item_amount'])))
                         })
         

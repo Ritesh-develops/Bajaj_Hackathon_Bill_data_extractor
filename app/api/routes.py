@@ -365,6 +365,7 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         all_items = []
         pagewise_items = []
         total_token_usage = {'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0}
+        extraction_diagnostics = []
         
         for page_no, image_bytes in enumerate(image_list, start=1):
             logger.info(f"Processing page {page_no}...")
@@ -406,12 +407,25 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                         bill_items=bill_items
                     )
                 )
+            else:
+                # Collect diagnostics for failed pages
+                extraction_diagnostics.append({
+                    "page": page_no,
+                    "notes": metadata.get('extraction_notes', ''),
+                    "reasoning": metadata.get('extraction_reasoning', '')[:200]
+                })
         
         if not all_items:
+            # Provide diagnostic information in error
+            diagnostic_msg = "No line items extracted from PDF. "
+            if extraction_diagnostics:
+                for diag in extraction_diagnostics:
+                    diagnostic_msg += f"Page {diag['page']}: {diag['notes']} | "
+            
             return BillExtractionResponse(
                 is_success=False,
                 token_usage=total_token_usage,
-                error="No line items could be extracted from the PDF"
+                error=diagnostic_msg or "No line items could be extracted from the PDF. This may be a handwritten or scanned document that requires manual review."
             )
         
         extracted_data = ExtractedBillData(
@@ -461,84 +475,90 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
     Returns:
         List of image bytes (PNG format)
     """
-    # Try pdf2image first
+    # Try PyMuPDF first (more reliable, no system dependencies)
     try:
-        import pdf2image
+        import fitz
         from PIL import Image
         
-        logger.info("Using pdf2image for PDF conversion...")
-        images = pdf2image.convert_from_bytes(pdf_bytes, fmt='png')
+        logger.info("Using PyMuPDF for PDF conversion...")
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
         
-        if not images:
+        if len(pdf) == 0:
             raise ValueError("No pages found in PDF or PDF is invalid/corrupted")
         
-        logger.info(f"Converted {len(images)} pages from PDF using pdf2image")
+        logger.info(f"PDF has {len(pdf)} pages")
         
-        # Convert PIL images to bytes
         image_bytes_list = []
-        for idx, img in enumerate(images):
+        for page_num in range(len(pdf)):
             try:
+                page = pdf[page_num]
+                # Render at 2x zoom for better quality
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                
+                # Convert pixmap to PIL Image
+                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                
+                # Convert to PNG bytes
                 img_bytes = io.BytesIO()
                 img.save(img_bytes, format='PNG')
                 image_bytes_list.append(img_bytes.getvalue())
-                logger.info(f"Converted page {idx + 1} to PNG ({len(img_bytes.getvalue())} bytes)")
+                logger.info(f"Converted page {page_num + 1} to PNG ({len(img_bytes.getvalue())} bytes)")
             except Exception as e:
-                logger.error(f"Error converting page {idx + 1} to PNG: {e}")
-                raise ValueError(f"Failed to convert page {idx + 1} to PNG: {e}")
+                logger.error(f"Error converting page {page_num + 1}: {e}")
+                raise ValueError(f"Failed to convert page {page_num + 1}: {e}")
         
-        logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages to images")
+        pdf.close()
+        logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages using PyMuPDF")
         return image_bytes_list
         
     except ImportError:
-        logger.info("pdf2image not available, trying PyMuPDF...")
-        # Fall back to PyMuPDF
+        logger.info("PyMuPDF not available, trying pdf2image + Poppler...")
+        # Fall back to pdf2image
         try:
-            import fitz
+            import pdf2image
             from PIL import Image
             
-            logger.info("Using PyMuPDF for PDF conversion...")
-            pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+            logger.info("Using pdf2image for PDF conversion...")
+            images = pdf2image.convert_from_bytes(pdf_bytes, fmt='png')
             
-            if len(pdf) == 0:
+            if not images:
                 raise ValueError("No pages found in PDF or PDF is invalid/corrupted")
             
-            logger.info(f"PDF has {len(pdf)} pages")
+            logger.info(f"Converted {len(images)} pages from PDF using pdf2image")
             
+            # Convert PIL images to bytes
             image_bytes_list = []
-            for page_num in range(len(pdf)):
+            for idx, img in enumerate(images):
                 try:
-                    page = pdf[page_num]
-                    # Render at 2x zoom for better quality
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    
-                    # Convert pixmap to PIL Image
-                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    
-                    # Convert to PNG bytes
                     img_bytes = io.BytesIO()
                     img.save(img_bytes, format='PNG')
                     image_bytes_list.append(img_bytes.getvalue())
-                    logger.info(f"Converted page {page_num + 1} to PNG ({len(img_bytes.getvalue())} bytes)")
+                    logger.info(f"Converted page {idx + 1} to PNG ({len(img_bytes.getvalue())} bytes)")
                 except Exception as e:
-                    logger.error(f"Error converting page {page_num + 1}: {e}")
-                    raise ValueError(f"Failed to convert page {page_num + 1}: {e}")
+                    logger.error(f"Error converting page {idx + 1} to PNG: {e}")
+                    raise ValueError(f"Failed to convert page {idx + 1} to PNG: {e}")
             
-            pdf.close()
-            logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages using PyMuPDF")
+            logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages to images")
             return image_bytes_list
             
         except ImportError:
             error_msg = (
-                "PDF conversion requires either:\n"
-                "  1. pdf2image + Poppler: pip install pdf2image, then download Poppler from https://github.com/oschwartz10612/poppler-windows/releases/\n"
-                "  2. PyMuPDF (easiest): pip install PyMuPDF"
+                "PDF conversion requires PyMuPDF. Install with:\n"
+                "  pip install PyMuPDF"
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
         except Exception as e:
-            logger.error(f"Error converting PDF with PyMuPDF: {e}", exc_info=True)
-            raise ValueError(f"Failed to convert PDF to images: {e}")
+            error_msg = (
+                f"Failed to convert PDF with pdf2image: {e}\n"
+                "Please ensure Poppler is installed and in PATH, or use PyMuPDF instead:\n"
+                "  pip install PyMuPDF"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
     except Exception as e:
+        logger.error(f"Error converting PDF with PyMuPDF: {e}", exc_info=True)
+        raise ValueError(f"Failed to convert PDF to images: {e}")
         if "poppler" in str(e).lower() or "not found" in str(e).lower():
             error_msg = (
                 "Poppler is not installed or not in PATH.\n"

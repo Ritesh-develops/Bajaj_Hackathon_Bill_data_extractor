@@ -75,8 +75,10 @@ class DoubleCountingGuard:
         
         text_lower = text.lower().strip()
         
+        # Only match if keyword is the complete text or whole word
         for keyword in DOUBLE_COUNT_KEYWORDS:
-            if keyword in text_lower:
+            # Match if it's the exact text or as a whole word (with spaces)
+            if text_lower == keyword or f" {keyword} " in f" {text_lower} " or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} "):
                 return True
         
         return False
@@ -262,22 +264,32 @@ class ExtractedDataValidator:
                     "item_name": self.cleaner.clean_item_name(
                         item.get('item_name', '')
                     ),
-                    "item_quantity": Decimal(str(item.get('item_quantity', 0))),
+                    "item_quantity": Decimal(str(item.get('item_quantity', 1))),  # Default to 1 for handwritten
                     "item_rate": Decimal(str(item.get('item_rate', 0))),
                     "item_amount": Decimal(str(item.get('item_amount', 0)))
                 }
                 
-                calculated_amount = ReconciliationEngine.calculate_line_item_total(
-                    clean_item["item_quantity"],
-                    clean_item["item_rate"]
-                )
-                
-                if abs(calculated_amount - clean_item["item_amount"]) > Decimal('0.01'):
-                    report["warnings"].append(
-                        f"Item '{clean_item['item_name']}': Amount mismatch, "
-                        f"correcting from {clean_item['item_amount']} to {calculated_amount}"
+                # For handwritten bills, rate might be 0 (not visible), but amount is present
+                if clean_item["item_rate"] > 0:
+                    calculated_amount = ReconciliationEngine.calculate_line_item_total(
+                        clean_item["item_quantity"],
+                        clean_item["item_rate"]
                     )
-                    clean_item["item_amount"] = calculated_amount
+                    
+                    if abs(calculated_amount - clean_item["item_amount"]) > Decimal('0.01'):
+                        report["warnings"].append(
+                            f"Item '{clean_item['item_name']}': Amount mismatch, "
+                            f"correcting from {clean_item['item_amount']} to {calculated_amount}"
+                        )
+                        clean_item["item_amount"] = calculated_amount
+                else:
+                    # Handwritten bill: rate is missing, use item_amount as-is
+                    if clean_item["item_amount"] > 0:
+                        logger.info(f"Item '{clean_item['item_name']}': No rate provided (handwritten), using amount {clean_item['item_amount']}")
+                    else:
+                        report["warnings"].append(
+                            f"Item '{clean_item['item_name']}': Neither rate nor amount provided"
+                        )
                 
                 cleaned_items.append(clean_item)
             except Exception as e:
