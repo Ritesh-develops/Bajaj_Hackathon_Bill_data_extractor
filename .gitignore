@@ -73,3 +73,8 @@ SUBMISSION_CHECKLIST.md
 SUBMISSION_GUIDE.md
 TECHNICAL_APPROACH.md
 VISUAL_GUIDE.md
+
+# Test and startup scripts (local use only)
+test_api.py
+run.bat
+run.sh
