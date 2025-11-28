@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  bill-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LLM_MODEL=gemini-2.0-flash
+      - LOG_LEVEL=INFO
+      - RECONCILIATION_THRESHOLD=0.01
+      - MAX_RETRY_ATTEMPTS=3
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - bill-extractor-network
+
+networks:
+  bill-extractor-network:
+    driver: bridge

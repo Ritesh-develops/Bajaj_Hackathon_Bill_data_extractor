@@ -1,0 +1,196 @@
+"""Image processing utilities for bill documents"""
+
+import cv2
+import numpy as np
+from PIL import Image
+import io
+import logging
+from typing import Tuple, Optional
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Set seeds for reproducibility
+np.random.seed(42)
+cv2.setRNGSeed(42)
+
+
+class ImageProcessor:
+    """Handles image preprocessing for bill documents"""
+    
+    def __init__(self, target_dpi: int = 300, min_resolution: int = 800):
+        self.target_dpi = target_dpi
+        self.min_resolution = min_resolution
+    
+    def load_image_from_url(self, image_bytes: bytes) -> np.ndarray:
+        """Load image from bytes"""
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            # Convert RGBA to RGB if necessary
+            if image.mode == 'RGBA':
+                image = image.convert('RGB')
+            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            logger.error(f"Error loading image: {e}")
+            raise ValueError(f"Failed to load image: {e}")
+    
+    def check_resolution(self, image: np.ndarray) -> Tuple[int, int]:
+        """Check image resolution"""
+        height, width = image.shape[:2]
+        return width, height
+    
+    def upscale_image(self, image: np.ndarray, target_width: int = None) -> np.ndarray:
+        """Upscale low-resolution images using deterministic interpolation"""
+        height, width = image.shape[:2]
+        
+        if target_width is None:
+            target_width = max(self.min_resolution, width)
+        
+        if width < self.min_resolution:
+            scale = target_width / width
+            new_height = int(height * scale)
+            # Use LINEAR interpolation for deterministic results (CUBIC has rounding variations)
+            upscaled = cv2.resize(image, (target_width, new_height), 
+                                 interpolation=cv2.INTER_LINEAR)
+            logger.info(f"Upscaled image from {width}x{height} to {target_width}x{new_height}")
+            return upscaled
+        
+        return image
+    
+    def deskew_image(self, image: np.ndarray) -> np.ndarray:
+        """Deskew tilted document images with deterministic approach"""
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Apply Canny edge detection with fixed parameters
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            
+            # Use Hough line detection to find the rotation angle
+            lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
+            
+            if lines is not None and len(lines) > 0:
+                # Calculate angle from all lines (more stable than median alone)
+                angles = []
+                for line in lines:
+                    theta = line[0][1]
+                    angle_deg = np.degrees(theta) - 90
+                    # Normalize to -45 to 45 range
+                    if angle_deg > 45:
+                        angle_deg -= 180
+                    elif angle_deg < -45:
+                        angle_deg += 180
+                    angles.append(angle_deg)
+                
+                # Use median for robustness
+                angle = np.median(angles)
+                
+                # Only apply rotation if angle is significant and within reasonable bounds
+                if abs(angle) > 1 and abs(angle) <= 45:
+                    height, width = image.shape[:2]
+                    center = (width // 2, height // 2)
+                    
+                    # Get rotation matrix
+                    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+                    
+                    # Apply rotation with consistent border handling
+                    deskewed = cv2.warpAffine(
+                        image, rotation_matrix, (width, height),
+                        borderMode=cv2.BORDER_REFLECT_101,  # More deterministic than REFLECT
+                        flags=cv2.INTER_LINEAR  # Use LINEAR instead of CUBIC for more stable results
+                    )
+                    logger.info(f"Deskewed image by {angle:.2f} degrees")
+                    return deskewed
+        except Exception as e:
+            logger.warning(f"Deskewing failed: {e}. Returning original image.")
+        
+        return image
+    
+    def binarize_image(self, image: np.ndarray) -> np.ndarray:
+        """Convert to grayscale and apply binarization to remove background artifacts"""
+        try:
+            # Convert to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) with fixed parameters
+            # This ensures consistent results across runs
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            
+            # Apply adaptive thresholding with fixed parameters for determinism
+            binary = cv2.adaptiveThreshold(
+                enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Denoise with median filter (more deterministic than morphological operations)
+            denoised = cv2.medianBlur(binary, 3)
+            
+            logger.info("Applied binarization and denoising")
+            return denoised
+        except Exception as e:
+            logger.warning(f"Binarization failed: {e}. Returning original image.")
+            return image
+    
+    def sharpen_image(self, image: np.ndarray) -> np.ndarray:
+        """Apply sharpening filter to enhance text clarity"""
+        try:
+            kernel = np.array([[-1, -1, -1],
+                              [-1,  9, -1],
+                              [-1, -1, -1]])
+            sharpened = cv2.filter2D(image, -1, kernel)
+            logger.info("Applied sharpening filter")
+            return sharpened
+        except Exception as e:
+            logger.warning(f"Sharpening failed: {e}. Returning original image.")
+            return image
+    
+    def process_document(self, image_bytes: bytes) -> np.ndarray:
+        """
+        Complete preprocessing pipeline for document images
+        
+        Steps:
+        1. Load image from bytes
+        2. Check and upscale resolution if needed
+        3. Deskew tilted documents
+        4. Apply sharpening
+        5. Binarize to remove backgrounds
+        
+        Returns: Processed image (still in BGR for LLM, not binary)
+        """
+        try:
+            # Load image
+            image = self.load_image_from_url(image_bytes)
+            logger.info(f"Loaded image with shape {image.shape}")
+            
+            # Check resolution and upscale if needed
+            width, height = self.check_resolution(image)
+            if width < self.min_resolution or height < self.min_resolution:
+                image = self.upscale_image(image)
+            
+            # Deskew
+            image = self.deskew_image(image)
+            
+            # Sharpen
+            image = self.sharpen_image(image)
+            
+            # For LLM processing, we need the processed image in a viewable format
+            # We'll return the color version with enhancements
+            logger.info("Document preprocessing completed successfully")
+            return image
+            
+        except Exception as e:
+            logger.error(f"Error in document processing pipeline: {e}")
+            raise
+    
+    @staticmethod
+    def image_to_bytes(image: np.ndarray) -> bytes:
+        """Convert OpenCV image to bytes"""
+        _, buffer = cv2.imencode('.png', image)
+        return buffer.tobytes()
+    
+    @staticmethod
+    def image_to_base64(image: np.ndarray) -> str:
+        """Convert OpenCV image to base64 string"""
+        import base64
+        image_bytes = ImageProcessor.image_to_bytes(image)
+        return base64.b64encode(image_bytes).decode('utf-8')
