@@ -1,12 +1,13 @@
 import logging
-from typing import Optional
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from typing import Optional, List
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import JSONResponse
 import aiohttp
 from app.models.schemas import BillItemRequest, BillExtractionResponse, ExtractedBillData, PageLineItems
 from app.core.image_processing import ImageProcessor
 from app.core.extractor import ExtractionOrchestrator
 from decimal import Decimal
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -302,3 +303,159 @@ async def download_document(url: str) -> Optional[bytes]:
     except Exception as e:
         logger.error(f"Error downloading document: {e}")
         return None
+
+
+@router.post("/extract-bill-data-pdf", response_model=BillExtractionResponse)
+async def extract_bill_data_pdf(file: UploadFile = File(...)) -> BillExtractionResponse:
+    """
+    Extract line items from a PDF file
+    
+    Supports:
+    - Single page PDFs (converted to image)
+    - Multi-page PDFs (returns items for all pages)
+    
+    Args:
+        file: PDF file upload
+        
+    Returns:
+        BillExtractionResponse with extracted data from all pages
+    """
+    try:
+        logger.info(f"Received PDF extraction request for: {file.filename}")
+        
+        # Read PDF file
+        pdf_bytes = await file.read()
+        
+        if not pdf_bytes:
+            raise ValueError("Failed to read PDF file")
+        
+        logger.info(f"Read PDF file: {len(pdf_bytes)} bytes")
+        
+        # Convert PDF to images (one per page)
+        logger.info("Converting PDF to images...")
+        image_list = convert_pdf_to_images(pdf_bytes)
+        
+        if not image_list:
+            raise ValueError("Failed to convert PDF to images")
+        
+        logger.info(f"Converted PDF to {len(image_list)} page(s)")
+        
+        # Process each page
+        all_items = []
+        pagewise_items = []
+        
+        for page_no, image_bytes in enumerate(image_list, start=1):
+            logger.info(f"Processing page {page_no}...")
+            
+            # Preprocess image
+            processed_image = image_processor.process_document(image_bytes)
+            processed_bytes = ImageProcessor.image_to_bytes(processed_image)
+            
+            # Extract from image
+            cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
+                processed_bytes,
+                page_no=str(page_no)
+            )
+            
+            if cleaned_items:
+                logger.info(f"Page {page_no}: Extracted {len(cleaned_items)} items")
+                
+                bill_items = [
+                    {
+                        "item_name": item['item_name'],
+                        "item_quantity": float(item['item_quantity']),
+                        "item_rate": float(item['item_rate']),
+                        "item_amount": float(item['item_amount'])
+                    }
+                    for item in cleaned_items
+                ]
+                
+                all_items.extend(cleaned_items)
+                pagewise_items.append(
+                    PageLineItems(
+                        page_no=str(page_no),
+                        bill_items=bill_items
+                    )
+                )
+        
+        if not all_items:
+            return BillExtractionResponse(
+                is_success=False,
+                error="No line items could be extracted from the PDF"
+            )
+        
+        # Calculate total across all pages
+        total_amount = sum(
+            Decimal(str(item.get('item_amount', 0)))
+            for item in all_items
+        )
+        
+        extracted_data = ExtractedBillData(
+            pagewise_line_items=pagewise_items,
+            total_item_count=len(all_items),
+            reconciled_amount=float(total_amount)
+        )
+        
+        response = BillExtractionResponse(
+            is_success=True,
+            data=extracted_data
+        )
+        
+        logger.info(
+            f"Successfully extracted {len(all_items)} total items from {len(image_list)} page(s). "
+            f"Total: {total_amount}"
+        )
+        
+        return response
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        return BillExtractionResponse(
+            is_success=False,
+            error=f"Invalid request: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        return BillExtractionResponse(
+            is_success=False,
+            error=f"Internal server error: {str(e)}"
+        )
+
+
+def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
+    """
+    Convert PDF to list of image bytes (one per page)
+    
+    Args:
+        pdf_bytes: PDF file bytes
+        
+    Returns:
+        List of image bytes (PNG format)
+    """
+    try:
+        try:
+            import pdf2image
+            from PIL import Image
+        except ImportError:
+            logger.error("pdf2image or Pillow not installed. Install with: pip install pdf2image pillow")
+            raise ValueError("PDF support requires pdf2image. Install with: pip install pdf2image")
+        
+        # Convert PDF to images
+        images = pdf2image.convert_from_bytes(pdf_bytes, fmt='png')
+        
+        if not images:
+            raise ValueError("No pages found in PDF")
+        
+        # Convert PIL images to bytes
+        image_bytes_list = []
+        for img in images:
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='PNG')
+            image_bytes_list.append(img_bytes.getvalue())
+        
+        logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages to images")
+        return image_bytes_list
+        
+    except Exception as e:
+        logger.error(f"Error converting PDF to images: {e}")
+        return []
