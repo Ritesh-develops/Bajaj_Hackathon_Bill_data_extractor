@@ -135,18 +135,21 @@ class ImageProcessor:
             logger.warning(f"Sharpening failed: {e}. Returning original image.")
             return image
     
-    def process_document(self, image_bytes: bytes) -> np.ndarray:
+    def process_document(self, image_bytes: bytes, skip_deskew: bool = False) -> np.ndarray:
         """
-        Complete preprocessing pipeline for document images
+        Optimized preprocessing pipeline for document images
         
         Steps:
         1. Load image from bytes
         2. Check and upscale resolution if needed
-        3. Deskew tilted documents
+        3. (Optional) Deskew tilted documents - skip for faster processing
         4. Apply sharpening
-        5. Binarize to remove backgrounds
         
-        Returns: Processed image (still in BGR for LLM, not binary)
+        Args:
+            image_bytes: Image data
+            skip_deskew: If True, skip deskewing for faster processing (LLM handles slight tilts well)
+        
+        Returns: Processed image (still in BGR for LLM)
         """
         try:
             image = self.load_image_from_url(image_bytes)
@@ -156,7 +159,9 @@ class ImageProcessor:
             if width < self.min_resolution or height < self.min_resolution:
                 image = self.upscale_image(image)
             
-            image = self.deskew_image(image)
+            # Skip deskewing for faster processing - Gemini handles slight tilts well
+            if not skip_deskew:
+                image = self.deskew_image(image)
             
             image = self.sharpen_image(image)
             
@@ -168,9 +173,12 @@ class ImageProcessor:
             raise
     
     @staticmethod
-    def image_to_bytes(image: np.ndarray) -> bytes:
-        """Convert OpenCV image to bytes"""
-        _, buffer = cv2.imencode('.png', image)
+    def image_to_bytes(image: np.ndarray, format: str = 'jpeg', quality: int = 90) -> bytes:
+        """Convert OpenCV image to bytes (JPEG for faster processing)"""
+        if format.lower() == 'jpeg':
+            _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        else:
+            _, buffer = cv2.imencode('.png', image)
         return buffer.tobytes()
     
     @staticmethod

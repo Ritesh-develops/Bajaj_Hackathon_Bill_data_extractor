@@ -4,7 +4,7 @@ import base64
 from typing import List, Dict, Optional, Tuple
 from decimal import Decimal
 import google.generativeai as genai
-from app.config import GEMINI_API_KEY, LLM_MODEL, MAX_RETRY_ATTEMPTS, RECONCILIATION_THRESHOLD
+from app.config import GEMINI_API_KEY, LLM_MODEL, MAX_RETRY_ATTEMPTS, RECONCILIATION_THRESHOLD, MIN_DISCREPANCY_FOR_RETRY
 from app.models.prompts import (
     EXTRACTION_SYSTEM_PROMPT,
     EXTRACTION_USER_PROMPT_TEMPLATE,
@@ -327,8 +327,16 @@ class ExtractionOrchestrator:
                 metadata['discrepancy'] = discrepancy
                 metadata['reconciliation_status'] = status
                 
-                if not is_match and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS:
-                    logger.info(f"Phase 4: Triggering retry (discrepancy: {discrepancy})")
+                # Skip retry for small discrepancies (configurable threshold, default 2%)
+                # This saves significant time while maintaining accuracy
+                should_retry = (
+                    not is_match 
+                    and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS
+                    and discrepancy > (Decimal(str(bill_total)) * Decimal(str(MIN_DISCREPANCY_FOR_RETRY)))
+                )
+                
+                if should_retry:
+                    logger.info(f"Phase 4: Triggering retry (discrepancy: {discrepancy}, status: {status})")
                     
                     retry_response = self.extractor.retry_extraction(
                         image_bytes,

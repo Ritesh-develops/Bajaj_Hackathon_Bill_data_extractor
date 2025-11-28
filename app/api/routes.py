@@ -266,9 +266,9 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
     try:
         logger.info("Processing image...")
         
-        # Preprocess image
+        # Preprocess image (skip deskewing for speed on image uploads)
         logger.info("Preprocessing image with OCR enhancements...")
-        processed_image = image_processor.process_document(image_bytes)
+        processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
         processed_bytes = ImageProcessor.image_to_bytes(processed_image)
         logger.info(f"Processed image to {len(processed_bytes)} bytes")
         
@@ -370,8 +370,8 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         for page_no, image_bytes in enumerate(image_list, start=1):
             logger.info(f"Processing page {page_no}...")
             
-            # Preprocess image
-            processed_image = image_processor.process_document(image_bytes)
+            # Preprocess image (PDF pages are well-aligned, skip deskewing)
+            processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
             processed_bytes = ImageProcessor.image_to_bytes(processed_image)
             
             # Extract from image

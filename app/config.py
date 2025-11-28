@@ -15,6 +15,7 @@ MIN_RESOLUTION = int(os.getenv("MIN_RESOLUTION", 800))
 
 RECONCILIATION_THRESHOLD = float(os.getenv("RECONCILIATION_THRESHOLD", 0.01))  # 0.01%
 MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", 3))
+MIN_DISCREPANCY_FOR_RETRY = float(os.getenv("MIN_DISCREPANCY_FOR_RETRY", 0.02))  # 2% - skip retry below this
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
