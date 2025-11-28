@@ -43,7 +43,6 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
         document_url = str(request.document)
         logger.info(f"Received extraction request for: {document_url}")
         
-        # Download document
         logger.info("Downloading document...")
         document_bytes = await download_document(document_url)
         
@@ -52,11 +51,9 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
         
         logger.info(f"Downloaded {len(document_bytes)} bytes")
         
-        # Detect if PDF or Image
         is_pdf = detect_document_type(document_bytes, document_url)
         logger.info(f"Detected document type: {'PDF' if is_pdf else 'Image'}")
         
-        # Process accordingly
         if is_pdf:
             return await process_pdf_extraction(document_bytes)
         else:
@@ -103,13 +100,11 @@ async def download_document(url_or_path: str) -> Optional[bytes]:
         Document bytes or None if failed
     """
     try:
-        # Check if it's a local file path
         if url_or_path.startswith(('file://', 'C:', 'D:', 'E:', '/', '\\\\')):
-            # Local file path
             file_path = url_or_path
             if file_path.startswith('file://'):
-                file_path = file_path[7:]  # Remove 'file://' prefix
-                if len(file_path) > 2 and file_path[2] == ':':  # Handle file:///C:
+                file_path = file_path[7:]  
+                if len(file_path) > 2 and file_path[2] == ':':  
                     file_path = file_path[1:]
             
             try:
@@ -124,14 +119,11 @@ async def download_document(url_or_path: str) -> Optional[bytes]:
                 logger.error(f"Error reading local file {file_path}: {e}")
                 return None
         
-        # Handle Google Drive links
         if 'drive.google.com' in url_or_path:
             url_or_path = convert_google_drive_link(url_or_path)
             logger.info(f"Converted Google Drive link to direct download URL")
         
-        # Download from URL
         async with aiohttp.ClientSession() as session:
-            # Add headers to prevent redirects and bypass restrictions
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
@@ -147,7 +139,6 @@ async def download_document(url_or_path: str) -> Optional[bytes]:
                     if response.status == 200:
                         data = await response.read()
                         
-                        # Check if we got HTML instead of the file (Google Drive redirect)
                         if data.startswith(b'<!DOCTYPE') or data.startswith(b'<html'):
                             logger.warning("Got HTML response, likely a redirect. Checking if it's a Google Drive link...")
                             raise ValueError("URL returned HTML instead of file content. This may be due to access restrictions.")
@@ -156,7 +147,6 @@ async def download_document(url_or_path: str) -> Optional[bytes]:
                         return data
                     else:
                         logger.error(f"Failed to download: HTTP {response.status}")
-                        # Try to read response text for debugging
                         try:
                             text = await response.text()
                             if len(text) < 500:
@@ -186,21 +176,16 @@ def convert_google_drive_link(drive_link: str) -> str:
         Direct download URL
     """
     try:
-        # Extract file ID from Google Drive link
-        # Format: https://drive.google.com/file/d/{FILE_ID}/view?usp=...
         if '/file/d/' in drive_link:
             file_id = drive_link.split('/file/d/')[1].split('/')[0]
-            # Convert to direct download URL
             direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
             logger.info(f"Extracted Google Drive file ID: {file_id}")
             return direct_url
         
-        # Handle folder links (not supported, return original)
         if '/folders/' in drive_link:
             logger.warning("Google Drive folder links are not supported, trying original URL")
             return drive_link
         
-        # If format is not recognized, return original
         logger.warning("Could not parse Google Drive link format, trying original URL")
         return drive_link
     except Exception as e:
@@ -222,16 +207,13 @@ def detect_document_type(document_bytes: bytes, url: str = "") -> bool:
         True if PDF, False if Image
     """
     try:
-        # Check PDF magic number
         if document_bytes.startswith(b'%PDF'):
             return True
         
-        # Check URL extension
         url_lower = url.lower()
         if url_lower.endswith('.pdf'):
             return True
         
-        # Check for image magic numbers
         image_signatures = [
             (b'\xff\xd8\xff', 'JPEG'),
             (b'\x89\x50\x4e\x47', 'PNG'),
@@ -245,7 +227,6 @@ def detect_document_type(document_bytes: bytes, url: str = "") -> bool:
             if document_bytes.startswith(sig):
                 return False
         
-        # Default to image if unsure
         return False
         
     except Exception as e:
@@ -266,13 +247,11 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
     try:
         logger.info("Processing image...")
         
-        # Preprocess image (skip deskewing for speed on image uploads)
         logger.info("Preprocessing image with OCR enhancements...")
         processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
         processed_bytes = ImageProcessor.image_to_bytes(processed_image)
         logger.info(f"Processed image to {len(processed_bytes)} bytes")
         
-        # Extract from image
         logger.info("Starting extraction orchestration...")
         cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
             processed_bytes,
@@ -355,13 +334,11 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         BillExtractionResponse with extracted data from all pages
     """
     try:
-        # Convert PDF to images (one per page)
         logger.info("Converting PDF to images...")
         image_list = convert_pdf_to_images(pdf_bytes)
         
         logger.info(f"Converted PDF to {len(image_list)} page(s)")
         
-        # Process each page
         all_items = []
         pagewise_items = []
         total_token_usage = {'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0}
@@ -370,17 +347,14 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         for page_no, image_bytes in enumerate(image_list, start=1):
             logger.info(f"Processing page {page_no}...")
             
-            # Preprocess image (PDF pages are well-aligned, skip deskewing)
             processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
             processed_bytes = ImageProcessor.image_to_bytes(processed_image)
             
-            # Extract from image
             cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
                 processed_bytes,
                 page_no=str(page_no)
             )
             
-            # Accumulate token usage
             page_token_usage = metadata.get('token_usage', {})
             total_token_usage['total_tokens'] += page_token_usage.get('total_tokens', 0)
             total_token_usage['input_tokens'] += page_token_usage.get('input_tokens', 0)
@@ -408,7 +382,6 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     )
                 )
             else:
-                # Collect diagnostics for failed pages
                 extraction_diagnostics.append({
                     "page": page_no,
                     "notes": metadata.get('extraction_notes', ''),
@@ -416,7 +389,6 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                 })
         
         if not all_items:
-            # Provide diagnostic information in error
             diagnostic_msg = "No line items extracted from PDF. "
             if extraction_diagnostics:
                 for diag in extraction_diagnostics:
@@ -475,7 +447,6 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
     Returns:
         List of image bytes (PNG format)
     """
-    # Try PyMuPDF first (more reliable, no system dependencies)
     try:
         import fitz
         from PIL import Image
@@ -492,13 +463,10 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
         for page_num in range(len(pdf)):
             try:
                 page = pdf[page_num]
-                # Render at 2x zoom for better quality
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 
-                # Convert pixmap to PIL Image
                 img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                 
-                # Convert to PNG bytes
                 img_bytes = io.BytesIO()
                 img.save(img_bytes, format='PNG')
                 image_bytes_list.append(img_bytes.getvalue())
@@ -513,7 +481,6 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
         
     except ImportError:
         logger.info("PyMuPDF not available, trying pdf2image + Poppler...")
-        # Fall back to pdf2image
         try:
             import pdf2image
             from PIL import Image
@@ -526,7 +493,6 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
             
             logger.info(f"Converted {len(images)} pages from PDF using pdf2image")
             
-            # Convert PIL images to bytes
             image_bytes_list = []
             for idx, img in enumerate(images):
                 try:

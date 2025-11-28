@@ -22,11 +22,9 @@ class ImageProcessor:
     def load_image_from_url(self, image_bytes: bytes) -> np.ndarray:
         """Load image from bytes"""
         try:
-            # Check if bytes look like HTML (error page)
             if image_bytes.startswith(b'<!DOCTYPE') or image_bytes.startswith(b'<html'):
                 raise ValueError("Downloaded content is HTML, not an image file. Check if URL is accessible.")
             
-            # Check if it's a valid image format
             image = Image.open(io.BytesIO(image_bytes))
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
@@ -159,7 +157,6 @@ class ImageProcessor:
             if width < self.min_resolution or height < self.min_resolution:
                 image = self.upscale_image(image)
             
-            # Skip deskewing for faster processing - Gemini handles slight tilts well
             if not skip_deskew:
                 image = self.deskew_image(image)
             

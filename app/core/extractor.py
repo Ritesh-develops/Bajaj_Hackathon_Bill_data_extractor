@@ -75,7 +75,6 @@ class GeminiExtractor:
             extraction_result = self._parse_response(response_text)
             extraction_result['page_number'] = page_no
             
-            # Capture token usage metadata
             if hasattr(response, 'usage_metadata'):
                 usage_data = response.usage_metadata
                 extraction_result['usage_metadata'] = {
@@ -193,7 +192,6 @@ class GeminiExtractor:
             
             retry_result = self._parse_retry_response(response_text)
             
-            # Capture token usage from retry
             if hasattr(response, 'usage_metadata'):
                 usage_data = response.usage_metadata
                 retry_result['usage_metadata'] = {
@@ -278,7 +276,6 @@ class ExtractionOrchestrator:
             logger.info(f"Phase 2: Starting extraction for page {page_no}")
             extraction_result = self.extractor.extract_from_image(image_bytes, page_no)
             
-            # Track token usage
             usage_data = extraction_result.get('usage_metadata', {})
             if usage_data:
                 self.total_tokens['total_tokens'] += usage_data.get('total_tokens', 0)
@@ -298,7 +295,6 @@ class ExtractionOrchestrator:
                 logger.info(f"Extraction notes: {extraction_result.get('notes')}")
                 logger.info(f"Extraction reasoning: {extraction_result.get('extraction_reasoning')}")
                 
-                # For debugging: return empty but preserve metadata
                 metadata['warnings'].append("No line items found in document")
                 metadata['extraction_notes'] = extraction_result.get('notes', '')
                 metadata['extraction_reasoning'] = extraction_result.get('extraction_reasoning', '')[:500]  # First 500 chars
@@ -327,8 +323,6 @@ class ExtractionOrchestrator:
                 metadata['discrepancy'] = discrepancy
                 metadata['reconciliation_status'] = status
                 
-                # Skip retry for small discrepancies (configurable threshold, default 2%)
-                # This saves significant time while maintaining accuracy
                 should_retry = (
                     not is_match 
                     and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS
@@ -348,7 +342,6 @@ class ExtractionOrchestrator:
                     
                     metadata['retry_attempts'] = 1
                     
-                    # Track retry token usage
                     retry_usage = retry_response.get('usage_metadata', {})
                     if retry_usage:
                         self.total_tokens['total_tokens'] += retry_usage.get('total_tokens', 0)
@@ -395,7 +388,6 @@ class ExtractionOrchestrator:
         
         for item in items:
             try:
-                # Handle rate being null (common for handwritten bills)
                 rate_value = item.get('rate')
                 if rate_value is None:
                     rate_value = 0
@@ -420,7 +412,6 @@ class ExtractionOrchestrator:
             action = correction.get('action', '').lower()
             
             if action == 'add':
-                # Handle rate being null for handwritten items
                 rate_value = correction.get('rate', 0)
                 if rate_value is None:
                     rate_value = 0
@@ -441,7 +432,6 @@ class ExtractionOrchestrator:
             elif action == 'modify':
                 for item in items:
                     if item.get('item_name') == correction.get('item_name'):
-                        # Handle rate being null
                         rate_value = correction.get('rate')
                         if rate_value is None:
                             rate_value = item.get('item_rate', 0)

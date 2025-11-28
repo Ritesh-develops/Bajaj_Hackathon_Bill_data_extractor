@@ -37,10 +37,10 @@ class DataCleaner:
             return text
         
         replacements = {
-            'l': '1',  # lowercase L to 1
-            'O': '0',  # uppercase O to 0
-            'S': '5',  # uppercase S to 5 
-            'B': '8',  # uppercase B to 8 
+            'l': '1', 
+            'O': '0', 
+            'S': '5',  
+            'B': '8',  
         }
         
         result = text
@@ -75,9 +75,7 @@ class DoubleCountingGuard:
         
         text_lower = text.lower().strip()
         
-        # Only match if keyword is the complete text or whole word
         for keyword in DOUBLE_COUNT_KEYWORDS:
-            # Match if it's the exact text or as a whole word (with spaces)
             if text_lower == keyword or f" {keyword} " in f" {text_lower} " or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} "):
                 return True
         
@@ -264,12 +262,11 @@ class ExtractedDataValidator:
                     "item_name": self.cleaner.clean_item_name(
                         item.get('item_name', '')
                     ),
-                    "item_quantity": Decimal(str(item.get('item_quantity', 1))),  # Default to 1 for handwritten
+                    "item_quantity": Decimal(str(item.get('item_quantity', 1))), 
                     "item_rate": Decimal(str(item.get('item_rate', 0))),
                     "item_amount": Decimal(str(item.get('item_amount', 0)))
                 }
                 
-                # For handwritten bills, rate might be 0 (not visible), but amount is present
                 if clean_item["item_rate"] > 0:
                     calculated_amount = ReconciliationEngine.calculate_line_item_total(
                         clean_item["item_quantity"],
@@ -283,7 +280,6 @@ class ExtractedDataValidator:
                         )
                         clean_item["item_amount"] = calculated_amount
                 else:
-                    # Handwritten bill: rate is missing, use item_amount as-is
                     if clean_item["item_amount"] > 0:
                         logger.info(f"Item '{clean_item['item_name']}': No rate provided (handwritten), using amount {clean_item['item_amount']}")
                     else:
