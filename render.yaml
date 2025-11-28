@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: bill-extractor-api
+    env: python
+    plan: free
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: |
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        fromService:
+          type: web
+          name: bill-extractor-api
+          property: port
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gemini-2.0-flash
+      - key: LOG_LEVEL
+        value: INFO
+      - key: TARGET_DPI
+        value: 300
+      - key: MIN_RESOLUTION
+        value: 800
+      - key: RECONCILIATION_THRESHOLD
+        value: 0.01
+      - key: MAX_RETRY_ATTEMPTS
+        value: 3
+      - key: MAX_IMAGE_SIZE
+        value: 20971520
