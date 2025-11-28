@@ -23,14 +23,21 @@ class BillItem(BaseModel):
 class PageLineItems(BaseModel):
     """Line items for a single page"""
     page_no: str = Field(..., description="Page number")
+    page_type: str = Field(default="Bill Detail", description="Type of page (Bill Detail | Final Bill | Pharmacy)")
     bill_items: List[BillItem] = Field(..., description="List of bill items on this page")
+
+
+class TokenUsage(BaseModel):
+    """Token usage statistics from LLM calls"""
+    total_tokens: int = Field(..., description="Cumulative tokens from all LLM calls")
+    input_tokens: int = Field(..., description="Cumulative input tokens from all LLM calls")
+    output_tokens: int = Field(..., description="Cumulative output tokens from all LLM calls")
 
 
 class ExtractedBillData(BaseModel):
     """Extracted and reconciled bill data"""
     pagewise_line_items: List[PageLineItems] = Field(..., description="Line items organized by page")
     total_item_count: int = Field(..., description="Total number of line items extracted")
-    reconciled_amount: Decimal = Field(..., description="Final reconciled total amount")
 
     class Config:
         json_encoders = {
@@ -40,9 +47,15 @@ class ExtractedBillData(BaseModel):
 
 class BillExtractionResponse(BaseModel):
     """Response schema for bill extraction API"""
-    is_success: bool = Field(..., description="Whether extraction was successful")
+    is_success: bool = Field(..., description="Whether extraction was successful (Status code 200 and valid schema)")
+    token_usage: TokenUsage = Field(..., description="Token usage statistics from LLM calls")
     data: Optional[ExtractedBillData] = Field(None, description="Extracted bill data")
     error: Optional[str] = Field(None, description="Error message if extraction failed")
+    
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v) if v % 1 else int(v)
+        }
 
 
 class ExtractionMetadata(BaseModel):

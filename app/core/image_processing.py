@@ -22,12 +22,21 @@ class ImageProcessor:
     def load_image_from_url(self, image_bytes: bytes) -> np.ndarray:
         """Load image from bytes"""
         try:
+            # Check if bytes look like HTML (error page)
+            if image_bytes.startswith(b'<!DOCTYPE') or image_bytes.startswith(b'<html'):
+                raise ValueError("Downloaded content is HTML, not an image file. Check if URL is accessible.")
+            
+            # Check if it's a valid image format
             image = Image.open(io.BytesIO(image_bytes))
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
             return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        except ValueError as e:
+            logger.error(f"Error loading image: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error loading image: {e}")
+            logger.error(f"First 100 bytes: {image_bytes[:100]}")
             raise ValueError(f"Failed to load image: {e}")
     
     def check_resolution(self, image: np.ndarray) -> Tuple[int, int]:
