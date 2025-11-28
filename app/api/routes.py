@@ -1,5 +1,3 @@
-"""API routes for bill extraction"""
-
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -14,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Initialize processors
+
 image_processor = ImageProcessor()
 orchestrator = ExtractionOrchestrator()
 
@@ -40,7 +38,6 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
     try:
         logger.info(f"Received extraction request for: {request.document}")
         
-        # Step 1: Download image from URL
         logger.info("Downloading document...")
         image_bytes = await download_document(str(request.document))
         
@@ -49,13 +46,11 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
         
         logger.info(f"Downloaded {len(image_bytes)} bytes")
         
-        # Step 2: Preprocess image with OCR enhancements
         logger.info("Preprocessing image with OCR enhancements...")
         processed_image = image_processor.process_document(image_bytes)
         processed_bytes = ImageProcessor.image_to_bytes(processed_image)
         logger.info(f"Processed image to {len(processed_bytes)} bytes")
         
-        # Step 3: Extract from image
         logger.info("Starting extraction orchestration...")
         cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
             processed_bytes,
@@ -68,7 +63,6 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
                 error="No line items could be extracted from the document"
             )
         
-        # Step 4: Format response
         bill_items = [
             {
                 "item_name": item['item_name'],
@@ -125,7 +119,6 @@ async def extract_bill_data_debug(request: BillItemRequest) -> BillExtractionRes
     try:
         logger.info(f"DEBUG: Received extraction request for: {request.document}")
         
-        # Step 1: Download image from URL
         logger.info("DEBUG: Downloading document...")
         image_bytes = await download_document(str(request.document))
         
@@ -134,13 +127,11 @@ async def extract_bill_data_debug(request: BillItemRequest) -> BillExtractionRes
         
         logger.info(f"DEBUG: Downloaded {len(image_bytes)} bytes")
         
-        # Step 2: Preprocess image
         logger.info("DEBUG: Preprocessing image...")
         processed_image = image_processor.process_document(image_bytes)
         processed_bytes = ImageProcessor.image_to_bytes(processed_image)
         logger.info(f"DEBUG: Processed image to {len(processed_bytes)} bytes")
         
-        # Step 3: Extract from image
         logger.info("DEBUG: Starting extraction orchestration...")
         cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
             processed_bytes,
@@ -155,7 +146,6 @@ async def extract_bill_data_debug(request: BillItemRequest) -> BillExtractionRes
                 error="No line items could be extracted from the document"
             )
         
-        # Step 4: Format response
         bill_items = [
             {
                 "item_name": item['item_name'],
@@ -212,7 +202,6 @@ async def extract_bill_data_raw(request: BillItemRequest) -> BillExtractionRespo
     try:
         logger.info(f"RAW: Received extraction request for: {request.document}")
         
-        # Step 1: Download image from URL
         logger.info("RAW: Downloading document...")
         image_bytes = await download_document(str(request.document))
         
@@ -221,10 +210,9 @@ async def extract_bill_data_raw(request: BillItemRequest) -> BillExtractionRespo
         
         logger.info(f"RAW: Downloaded {len(image_bytes)} bytes (NO PREPROCESSING)")
         
-        # Step 3: Extract from image WITHOUT preprocessing
         logger.info("RAW: Starting extraction orchestration with RAW image...")
         cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
-            image_bytes,  # SENDING RAW BYTES, NOT PROCESSED
+            image_bytes, 
             page_no="1"
         )
         
@@ -236,7 +224,6 @@ async def extract_bill_data_raw(request: BillItemRequest) -> BillExtractionRespo
                 error="No line items could be extracted from the document"
             )
         
-        # Step 4: Format response
         bill_items = [
             {
                 "item_name": item['item_name'],

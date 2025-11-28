@@ -1,5 +1,3 @@
-"""System prompts for LLM extraction"""
-
 EXTRACTION_SYSTEM_PROMPT = """You are an expert financial document analyst specializing in bill and invoice processing.
 Your task is to extract line item data from bill images with high accuracy and precision.
 

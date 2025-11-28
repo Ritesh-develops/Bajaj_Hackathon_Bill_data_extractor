@@ -1,5 +1,3 @@
-"""Gemini Vision LLM extraction module"""
-
 import logging
 import json
 import base64
@@ -33,9 +31,9 @@ class GeminiExtractor:
             model_name=self.model,
             system_instruction=EXTRACTION_SYSTEM_PROMPT,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.0,  # Deterministic extraction - 0 = always same result
-                top_p=1.0,        # Use all tokens equally
-                top_k=1,          # Only consider highest probability token
+                temperature=0.0,
+                top_p=1.0,       
+                top_k=1,    
                 max_output_tokens=4096
             )
         )
@@ -54,10 +52,8 @@ class GeminiExtractor:
             Dictionary with extracted data
         """
         try:
-            # Encode image to base64
             image_base64 = base64.standard_b64encode(image_bytes).decode('utf-8')
             
-            # Prepare the message with image
             message = genai.types.ContentDict(
                 parts=[
                     {
@@ -70,15 +66,12 @@ class GeminiExtractor:
                 ]
             )
             
-            # Call Gemini API
             logger.info(f"Sending page {page_no} to Gemini for extraction...")
             response = self.client.generate_content(message)
             
-            # Parse response
             response_text = response.text
             logger.debug(f"Gemini raw response: {response_text[:500]}...")
             
-            # Extract JSON from response
             extraction_result = self._parse_response(response_text)
             extraction_result['page_number'] = page_no
             
@@ -94,7 +87,6 @@ class GeminiExtractor:
     def _parse_response(response_text: str) -> Dict:
         """Parse Gemini response and extract JSON"""
         try:
-            # Try to find JSON in the response
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
             
@@ -110,7 +102,6 @@ class GeminiExtractor:
             json_str = response_text[start_idx:end_idx]
             extraction = json.loads(json_str)
             
-            # Standardize the response format
             return {
                 'extraction_reasoning': extraction.get('extraction_reasoning', ''),
                 'line_items': extraction.get('line_items', []),
@@ -145,7 +136,6 @@ class GeminiExtractor:
             discrepancy = actual_total - calculated_total
             item_count = len(extracted_items)
             
-            # Format items for display
             items_json = json.dumps([
                 {
                     'item_name': item.get('item_name'),
@@ -156,7 +146,6 @@ class GeminiExtractor:
                 for item in extracted_items
             ], indent=2)
             
-            # Create retry prompt
             retry_prompt = RECONCILIATION_RETRY_PROMPT_TEMPLATE.format(
                 item_count=item_count,
                 extracted_items=items_json,
@@ -165,12 +154,10 @@ class GeminiExtractor:
                 discrepancy=float(discrepancy)
             )
             
-            # Encode image to base64
             image_base64 = base64.standard_b64encode(image_bytes).decode('utf-8')
             
             logger.info(f"Retry #{retry_count}: Reconciliation with LLM...")
             
-            # Call Gemini with retry prompt
             message = genai.types.ContentDict(
                 parts=[
                     {
@@ -188,7 +175,6 @@ class GeminiExtractor:
             
             logger.debug(f"Retry response: {response_text[:500]}...")
             
-            # Parse retry response
             retry_result = self._parse_retry_response(response_text)
             
             return retry_result
@@ -255,11 +241,9 @@ class ExtractionOrchestrator:
         }
         
         try:
-            # Phase 2: Extract from image
             logger.info(f"Phase 2: Starting extraction for page {page_no}")
             extraction_result = self.extractor.extract_from_image(image_bytes, page_no)
             
-            # Convert to our internal format
             raw_items = self._convert_to_internal_format(extraction_result.get('line_items', []))
             bill_total = extraction_result.get('bill_total')
             
@@ -269,7 +253,6 @@ class ExtractionOrchestrator:
             
             logger.info(f"Phase 3: Validating and cleaning {len(raw_items)} items")
             
-            # Phase 3: Validate and clean
             cleaned_items, clean_report = self.validator.validate_and_clean(
                 raw_items,
                 bill_total
@@ -277,12 +260,10 @@ class ExtractionOrchestrator:
             
             metadata['warnings'].extend(clean_report.get('warnings', []))
             
-            # Calculate totals
             calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
             
             logger.info(f"Calculated total: {calculated_total}, Bill total: {bill_total}")
             
-            # Phase 3: Reconciliation check
             if bill_total is not None:
                 is_match, discrepancy, status = self.reconciler.reconcile(
                     calculated_total,
@@ -292,7 +273,6 @@ class ExtractionOrchestrator:
                 metadata['discrepancy'] = discrepancy
                 metadata['reconciliation_status'] = status
                 
-                # Phase 4: Agentic retry if needed
                 if not is_match and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS:
                     logger.info(f"Phase 4: Triggering retry (discrepancy: {discrepancy})")
                     
@@ -306,14 +286,12 @@ class ExtractionOrchestrator:
                     
                     metadata['retry_attempts'] = 1
                     
-                    # Apply corrections if suggested
                     if retry_response.get('corrections'):
                         cleaned_items = self._apply_corrections(
                             cleaned_items,
                             retry_response['corrections']
                         )
                         
-                        # Recalculate
                         calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
                         is_match, discrepancy, status = self.reconciler.reconcile(
                             calculated_total,
@@ -326,7 +304,7 @@ class ExtractionOrchestrator:
                             f"Applied {len(retry_response['corrections'])} corrections from retry"
                         )
             
-            metadata['extraction_confidence'] = 0.95  # Default high confidence after cleanup
+            metadata['extraction_confidence'] = 0.95
             
             return cleaned_items, calculated_total, metadata
             

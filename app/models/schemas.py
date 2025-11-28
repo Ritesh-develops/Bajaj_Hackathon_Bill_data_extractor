@@ -48,7 +48,7 @@ class BillExtractionResponse(BaseModel):
 class ExtractionMetadata(BaseModel):
     """Metadata about the extraction process"""
     total_pages: int
-    extraction_confidence: float  # 0-1
-    reconciliation_status: str  # "exact_match", "corrected", "approximated"
+    extraction_confidence: float  
+    reconciliation_status: str 
     discrepancy: Decimal
     retry_attempts: int

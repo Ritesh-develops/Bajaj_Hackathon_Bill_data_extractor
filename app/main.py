@@ -8,7 +8,6 @@ from app.config import API_HOST, API_PORT
 
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
 app = FastAPI(
     title="Bill Data Extractor",
     description="Extract line items and totals from bill images using AI",
@@ -17,7 +16,6 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,7 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routes
 app.include_router(routes.router, prefix="/api", tags=["extraction"])
 
 

@@ -1,5 +1,3 @@
-"""Reconciliation and data validation logic"""
-
 import logging
 import re
 from typing import List, Dict, Tuple, Optional
@@ -22,15 +20,11 @@ class DataCleaner:
             if not isinstance(value, str):
                 return Decimal(str(value))
             
-            # Remove common currency symbols and spaces
             cleaned = re.sub(r'[\$£€₹\s]', '', value.strip())
             
-            # Remove thousands separators (commas) when followed by 3 digits and a decimal
             cleaned = re.sub(r',(?=\d{3}\.)', '', cleaned)
-            # Remove other commas that are thousands separators
             cleaned = re.sub(r',(?=\d{3}(?:\D|$))', '', cleaned)
             
-            # Convert to Decimal
             return Decimal(cleaned)
         except Exception as e:
             logger.warning(f"Failed to standardize number '{value}': {e}")
@@ -45,15 +39,12 @@ class DataCleaner:
         replacements = {
             'l': '1',  # lowercase L to 1
             'O': '0',  # uppercase O to 0
-            'S': '5',  # uppercase S to 5 (in some contexts)
-            'B': '8',  # uppercase B to 8 (in some contexts)
+            'S': '5',  # uppercase S to 5 
+            'B': '8',  # uppercase B to 8 
         }
         
-        # Only apply to purely numeric contexts
-        # This is a conservative approach
         result = text
         for old, new in replacements.items():
-            # Only replace if surrounded by digits or at boundaries
             result = re.sub(rf'(?<=[0-9]){re.escape(old)}(?=[0-9])', new, result)
         
         return result
@@ -64,13 +55,10 @@ class DataCleaner:
         if not name:
             return ""
         
-        # Remove extra whitespace
         name = ' '.join(name.split())
         
-        # Remove trailing/leading special characters
         name = re.sub(r'^[\s\-\*]+|[\s\-\*]+$', '', name)
         
-        # Fix OCR errors specific to text
         name = DataCleaner.fix_ocr_errors(name)
         
         return name
@@ -103,7 +91,6 @@ class DoubleCountingGuard:
         if not items or len(items) < 2:
             return False
         
-        # Calculate sum of all items
         total = sum(
             Decimal(str(item.get('item_amount', 0))) 
             for item in items
@@ -112,13 +99,9 @@ class DoubleCountingGuard:
         if total == 0:
             return False
         
-        # Calculate average item amount to establish baseline
         avg_amount = total / len(items)
         
-        # If suspect amount is much larger than average (5x+), it's likely a total
-        # This prevents filtering legitimate high-value items
         if suspect_amount > avg_amount * Decimal('5'):
-            # Additional check: does it equal the sum?
             if abs(suspect_amount - total) < Decimal('0.01'):
                 return True
         
@@ -139,23 +122,17 @@ class DoubleCountingGuard:
             item_name = item.get('item_name', '').lower()
             amount = Decimal(str(item.get('item_amount', 0)))
             
-            # Check for keyword matches - strict check only
             if DoubleCountingGuard.is_double_count_keyword(item_name):
-                # Before removing, verify this isn't a legitimate item with unfortunate naming
-                # Check if it has typical item properties (quantity, rate not 1 or 0)
                 qty = Decimal(str(item.get('item_quantity', 0)))
                 rate = Decimal(str(item.get('item_rate', 0)))
                 
-                # If quantity or rate is suspiciously 1 or 0, likely a summary line
                 if qty <= 0 or rate == 0:
                     logger.info(f"Removed item '{item_name}' - keyword + suspiciously low qty/rate")
                     removed_items.append(item)
                     continue
-                # If it looks like a real item (qty > 1, rate > 0), keep it
                 else:
                     logger.info(f"Keeping '{item_name}' - despite keyword, has valid qty/rate: {qty}@{rate}")
             else:
-                # For non-keyword items, only check outlier if already have a significant sample
                 if len(clean_items) >= 3:
                     suspect = DoubleCountingGuard.check_outlier_total(clean_items, amount)
                     if suspect:
@@ -215,11 +192,9 @@ class ReconciliationEngine:
         """
         discrepancy = abs(calculated_total - actual_total)
         
-        # Check for exact match
         if discrepancy == 0:
             return True, Decimal('0.00'), "exact_match"
         
-        # Check if within threshold
         if actual_total > 0:
             percentage_diff = (discrepancy / actual_total)
             if percentage_diff <= self.threshold:
@@ -244,7 +219,6 @@ class ReconciliationEngine:
                 
                 calculated = quantity * rate
                 
-                # Allow small rounding differences
                 if abs(calculated - amount) > Decimal('0.01'):
                     errors.append(
                         f"Item {idx}: {item.get('item_name')} - "
@@ -281,7 +255,6 @@ class ExtractedDataValidator:
             "warnings": []
         }
         
-        # Step 1: Clean item names and standardize numbers
         cleaned_items = []
         for item in items:
             try:
@@ -294,7 +267,6 @@ class ExtractedDataValidator:
                     "item_amount": Decimal(str(item.get('item_amount', 0)))
                 }
                 
-                # Fix calculation if needed
                 calculated_amount = ReconciliationEngine.calculate_line_item_total(
                     clean_item["item_quantity"],
                     clean_item["item_rate"]
@@ -313,7 +285,6 @@ class ExtractedDataValidator:
         
         report["cleaning_steps"].append(f"Cleaned {len(cleaned_items)} items")
         
-        # Step 2: Remove double-counting entries
         filtered_items, removed = self.guard.filter_double_counts(cleaned_items)
         
         if removed:
@@ -322,7 +293,6 @@ class ExtractedDataValidator:
                 f"{', '.join(i.get('item_name', 'unknown') for i in removed)}"
             )
         
-        # Step 3: Validate line item amounts
         is_valid, calc_errors = self.reconciler.validate_line_item_amounts(filtered_items)
         if not is_valid:
             report["errors"].extend(calc_errors)
