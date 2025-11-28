@@ -193,6 +193,22 @@ class GeminiExtractor:
             
             retry_result = self._parse_retry_response(response_text)
             
+            # Capture token usage from retry
+            if hasattr(response, 'usage_metadata'):
+                usage_data = response.usage_metadata
+                retry_result['usage_metadata'] = {
+                    'total_tokens': usage_data.total_token_count,
+                    'input_tokens': usage_data.prompt_token_count,
+                    'output_tokens': usage_data.candidates_token_count
+                }
+                logger.info(f"Retry tokens - Total: {usage_data.total_token_count}, Input: {usage_data.prompt_token_count}, Output: {usage_data.candidates_token_count}")
+            else:
+                retry_result['usage_metadata'] = {
+                    'total_tokens': 0,
+                    'input_tokens': 0,
+                    'output_tokens': 0
+                }
+            
             return retry_result
             
         except Exception as e:
@@ -236,7 +252,7 @@ class ExtractionOrchestrator:
         self.extractor = GeminiExtractor()
         self.reconciler = ReconciliationEngine(threshold=float(RECONCILIATION_THRESHOLD))
         self.validator = ExtractedDataValidator()
-        self.total_tokens = {'total': 0, 'input': 0, 'output': 0}
+        self.total_tokens = {'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0}
     
     def extract_bill(
         self,
@@ -265,10 +281,14 @@ class ExtractionOrchestrator:
             # Track token usage
             usage_data = extraction_result.get('usage_metadata', {})
             if usage_data:
-                self.total_tokens['total'] += usage_data.get('total_tokens', 0)
-                self.total_tokens['input'] += usage_data.get('input_tokens', 0)
-                self.total_tokens['output'] += usage_data.get('output_tokens', 0)
-                metadata['token_usage'] = dict(self.total_tokens)
+                self.total_tokens['total_tokens'] += usage_data.get('total_tokens', 0)
+                self.total_tokens['input_tokens'] += usage_data.get('input_tokens', 0)
+                self.total_tokens['output_tokens'] += usage_data.get('output_tokens', 0)
+                metadata['token_usage'] = {
+                    'total_tokens': self.total_tokens['total_tokens'],
+                    'input_tokens': self.total_tokens['input_tokens'],
+                    'output_tokens': self.total_tokens['output_tokens']
+                }
             
             raw_items = self._convert_to_internal_format(extraction_result.get('line_items', []))
             bill_total = extraction_result.get('bill_total')
@@ -315,10 +335,14 @@ class ExtractionOrchestrator:
                     # Track retry token usage
                     retry_usage = retry_response.get('usage_metadata', {})
                     if retry_usage:
-                        self.total_tokens['total'] += retry_usage.get('total_tokens', 0)
-                        self.total_tokens['input'] += retry_usage.get('input_tokens', 0)
-                        self.total_tokens['output'] += retry_usage.get('output_tokens', 0)
-                        metadata['token_usage'] = dict(self.total_tokens)
+                        self.total_tokens['total_tokens'] += retry_usage.get('total_tokens', 0)
+                        self.total_tokens['input_tokens'] += retry_usage.get('input_tokens', 0)
+                        self.total_tokens['output_tokens'] += retry_usage.get('output_tokens', 0)
+                        metadata['token_usage'] = {
+                            'total_tokens': self.total_tokens['total_tokens'],
+                            'input_tokens': self.total_tokens['input_tokens'],
+                            'output_tokens': self.total_tokens['output_tokens']
+                        }
                     
                     if retry_response.get('corrections'):
                         cleaned_items = self._apply_corrections(
