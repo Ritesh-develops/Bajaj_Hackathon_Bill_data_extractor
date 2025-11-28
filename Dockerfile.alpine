@@ -1,0 +1,40 @@
+FROM python:3.11-slim as builder
+
+WORKDIR /build
+
+# Copy requirements first
+COPY requirements.txt .
+
+# Install pip dependencies to /build/.local
+RUN pip install --user --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --user --no-cache-dir -r requirements.txt
+
+
+# Final stage - use Alpine for minimal size (no apt-get issues)
+FROM python:3.11-alpine
+
+WORKDIR /app
+
+# Install minimal runtime dependencies for Alpine
+RUN apk add --no-cache \
+    libstdc++ \
+    libgomp \
+    libgfortran \
+    openblas \
+    poppler \
+    libc6-compat
+
+# Copy Python packages from builder
+COPY --from=builder /root/.local /root/.local
+
+# Set environment
+ENV PATH=/root/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Copy app code
+COPY . .
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
