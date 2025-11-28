@@ -2,14 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    libgl1-glx \
+# Update package lists and install system dependencies with retry logic
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
 
 
 COPY requirements.txt .

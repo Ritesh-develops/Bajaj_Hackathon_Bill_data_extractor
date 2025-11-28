@@ -1,22 +1,19 @@
 services:
   - type: web
     name: bill-extractor-api
-    env: python
-    plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-    startCommand: |
-      uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    plan: standard
+    dockerfile: Dockerfile.render
+    dockerCommand: |
+      python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
       - key: API_HOST
         value: 0.0.0.0
       - key: API_PORT
-        fromService:
-          type: web
-          name: bill-extractor-api
-          property: port
+        value: 8000
       - key: GEMINI_API_KEY
         sync: false
       - key: LLM_MODEL
