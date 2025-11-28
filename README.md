@@ -448,14 +448,14 @@ Special features for handwritten bills:
 
 ## Future Enhancements
 
-- [ ] OCR-based coordinate validation with PaddleOCR
-- [ ] Support for multiple currencies and locales
-- [ ] Batch processing API for bulk extractions
-- [ ] Performance metrics dashboard
-- [ ] Fine-tuned models for specific invoice formats
-- [ ] Receipt extraction (in addition to bills/invoices)
-- [ ] Item-level confidence scores in API response
-- [ ] Metadata extraction (vendor, dates, payment terms)
+- OCR-based coordinate validation with PaddleOCR
+- Support for multiple currencies and locales
+- Batch processing API for bulk extractions
+- Performance metrics dashboard
+- Fine-tuned models for specific invoice formats
+- Receipt extraction (in addition to bills/invoices)
+- Item-level confidence scores in API response
+- Metadata extraction (vendor, dates, payment terms)
 
 ---
 
@@ -464,8 +464,8 @@ Special features for handwritten bills:
 **Status**: Production Ready ✅
 
 **Key Updates (v1.1.0):**
-- ✅ Handwritten document support
-- ✅ Multi-format document support (Images, PDFs, Google Drive)
-- ✅ Performance optimizations (25-30% faster)
-- ✅ Smart retry threshold
-- ✅ Deterministic results (temperature=0.0)
+- Handwritten document support
+- Multi-format document support (Images, PDFs, Google Drive)
+- Performance optimizations (25-30% faster)
+- Smart retry threshold
+- Deterministic results (temperature=0.0)
