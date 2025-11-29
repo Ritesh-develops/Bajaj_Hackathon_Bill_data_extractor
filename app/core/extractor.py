@@ -39,11 +39,103 @@ class GeminiExtractor:
                 temperature=0.0,
                 top_p=1.0,       
                 top_k=1,
-                max_output_tokens=1024  # Further reduced for speed (from 1536)
+                max_output_tokens=2048  # Increased for paid tier - better accuracy with fewer retries
             )
         )
         
         logger.info(f"Initialized Gemini extractor with model: {self.model} (temperature=0.0 for deterministic results)")
+    
+    @staticmethod
+    def _validate_extracted_items(line_items: List[Dict], bill_total: Optional[float] = None) -> Tuple[List[Dict], Dict]:
+        """
+        Validate and clean extracted items with confidence scoring
+        
+        Returns:
+            - cleaned_items: validated line items
+            - validation_report: accuracy metrics
+        """
+        validation_report = {
+            'total_items': len(line_items),
+            'valid_items': 0,
+            'invalid_items': 0,
+            'items_with_zero_amount': 0,
+            'suspicious_items': [],
+            'accuracy_score': 0.0,
+            'issues': []
+        }
+        
+        cleaned_items = []
+        
+        for idx, item in enumerate(line_items):
+            if not item or not isinstance(item, dict):
+                validation_report['invalid_items'] += 1
+                continue
+            
+            item_name = str(item.get('item_name', '')).strip()
+            quantity = item.get('quantity', 1)
+            rate = item.get('rate', 0)
+            amount = item.get('amount', 0)
+            
+            # Convert to float for validation
+            try:
+                quantity = float(quantity) if quantity else 1
+                rate = float(rate) if rate else 0
+                amount = float(amount) if amount else 0
+            except (ValueError, TypeError):
+                validation_report['invalid_items'] += 1
+                validation_report['issues'].append(f"Item {idx}: Could not convert numbers")
+                continue
+            
+            # Validation checks
+            if not item_name:
+                validation_report['invalid_items'] += 1
+                validation_report['issues'].append(f"Item {idx}: Missing item name")
+                continue
+            
+            if amount == 0 and quantity == 0:
+                validation_report['items_with_zero_amount'] += 1
+                validation_report['issues'].append(f"Item {idx} ({item_name}): Zero amount and quantity")
+                continue
+            
+            # Verify math: quantity × rate should equal amount
+            if quantity > 0 and rate > 0 and amount > 0:
+                calculated_amount = quantity * rate
+                difference = abs(calculated_amount - amount)
+                tolerance = max(0.01, amount * 0.05)  # 5% tolerance or 0.01
+                
+                if difference > tolerance:
+                    validation_report['suspicious_items'].append({
+                        'item': item_name,
+                        'calculated': calculated_amount,
+                        'actual': amount,
+                        'difference': difference
+                    })
+                    logger.warning(f"Item math mismatch: {item_name} - calc:{calculated_amount}, actual:{amount}")
+                    # Still include but flag as suspicious
+            
+            # Clean and add item
+            cleaned_item = {
+                'item_name': item_name,
+                'item_quantity': quantity,
+                'item_rate': rate,
+                'item_amount': amount,
+                'confidence': 0.95 if not validation_report['suspicious_items'] else 0.75
+            }
+            cleaned_items.append(cleaned_item)
+            validation_report['valid_items'] += 1
+        
+        # Calculate accuracy score
+        total = validation_report['total_items']
+        if total > 0:
+            accuracy_score = (validation_report['valid_items'] - len(validation_report['suspicious_items']) * 0.2) / total
+            validation_report['accuracy_score'] = max(0, min(1.0, accuracy_score))  # Clamp to 0-1
+        
+        if validation_report['accuracy_score'] >= 0.8:
+            logger.info(f"✓ Extraction accuracy: {validation_report['accuracy_score']:.1%}")
+        else:
+            logger.warning(f"⚠ Low extraction accuracy: {validation_report['accuracy_score']:.1%} - {validation_report['issues']}")
+        
+        return cleaned_items, validation_report
     
     def extract_from_image(self, image_bytes: bytes, page_no: str = "1") -> Dict:
         """
@@ -646,16 +738,31 @@ class ExtractionOrchestrator:
             logger.info(f"[EXTRACTOR] Phase 3: Cleaned items: {len(cleaned_items)}, Warnings: {len(clean_report.get('warnings', []))}")
             metadata['warnings'].extend(clean_report.get('warnings', []))
             
-            calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
+            # NEW: Advanced accuracy validation
+            logger.info(f"[EXTRACTOR] Phase 3b: Running advanced accuracy validation...")
+            validated_items, validation_report = GeminiExtractor._validate_extracted_items(cleaned_items, bill_total)
+            
+            logger.info(f"[EXTRACTOR] Accuracy Report - Valid: {validation_report['valid_items']}/{validation_report['total_items']}, "
+                       f"Score: {validation_report['accuracy_score']:.1%}, Issues: {len(validation_report['issues'])}")
+            
+            if validation_report['suspicious_items']:
+                logger.warning(f"[EXTRACTOR] Found {len(validation_report['suspicious_items'])} items with suspicious math")
+                for susp in validation_report['suspicious_items']:
+                    logger.warning(f"  - {susp['item']}: calculated={susp['calculated']}, actual={susp['actual']}")
+            
+            metadata['accuracy_score'] = validation_report['accuracy_score']
+            metadata['validation_issues'] = validation_report['issues']
+            
+            calculated_total = ReconciliationEngine.sum_line_items(validated_items)
             
             logger.info(f"[EXTRACTOR] Phase 3: Calculated total: {calculated_total}, Bill total: {bill_total}")
             
             # SKIP RECONCILIATION for speed - return immediately
             metadata['reconciliation_status'] = 'skipped_for_speed'
-            metadata['extraction_confidence'] = 0.95
-            logger.info(f"[EXTRACTOR] Extraction complete - Items: {len(cleaned_items)}, Total: {calculated_total}, Status: SPEED_OPTIMIZED")
+            metadata['extraction_confidence'] = validation_report['accuracy_score']
+            logger.info(f"[EXTRACTOR] Extraction complete - Items: {len(validated_items)}, Total: {calculated_total}, Accuracy: {validation_report['accuracy_score']:.1%}")
             
-            return cleaned_items, calculated_total, metadata
+            return validated_items, calculated_total, metadata
             
         except Exception as e:
             logger.error(f"[EXTRACTOR] [ERROR] Error in extraction workflow: {e}", exc_info=True)

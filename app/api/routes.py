@@ -471,7 +471,7 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         
         time_concurrent_start = time.time()
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
             futures = [
                 executor.submit(process_single_page, page_no, image_bytes) 
                 for page_no, image_bytes in enumerate(image_list, start=1)

@@ -7,7 +7,7 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8000))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-1.5-flash")  # Faster model for paid tier
 
 MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", 20 * 1024 * 1024)) 
 TARGET_DPI = int(os.getenv("TARGET_DPI", 300))

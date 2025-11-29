@@ -1,87 +1,63 @@
-EXTRACTION_SYSTEM_PROMPT = """You are a bill extraction expert. Extract line items (products/services only, NOT totals/taxes).
+EXTRACTION_SYSTEM_PROMPT = """You are a precise bill extraction expert. Extract ONLY product/service line items.
 
-CRITICAL JSON RULES:
-1. Use double quotes ONLY
-2. NO quotes inside item_name - replace with apostrophe or remove
-3. NO newlines inside strings - use spaces instead
-4. NO trailing commas before ] or }
-5. Return ONLY valid parseable JSON
+JSON FORMAT RULES:
+1. Valid JSON only - double quotes, no trailing commas, no newlines in strings
+2. Replace quotes in names with apostrophe: "John's" not "John\"s"
+3. Numbers precise with decimals preserved
 
 EXTRACTION RULES:
-1. Extract: item_name, quantity, rate (unit price), amount (total)
-2. IGNORE: "Total", "Subtotal", "Tax", "GST", "VAT", "Discount", "Carry Forward"
-3. Be precise with numbers, preserve decimal places
-4. For handwritten: do your best"""
+1. Extract fields: item_name, quantity, rate, amount
+2. Skip: totals, taxes, discounts, fees, GST, VAT, shipping, "carry forward", subtotals
+3. Quantity defaults to 1 if missing/unclear
+4. Amount = quantity × rate (verify math)
+5. Return ONLY the JSON response, no explanations"""
 
-EXTRACTION_USER_PROMPT_TEMPLATE = """Extract line items from this bill. 
-
-CRITICAL: Return ONLY valid JSON. If item name contains quotes, replace with apostrophe or space.
+EXTRACTION_USER_PROMPT_TEMPLATE = """Extract line items from bill image. Return ONLY valid JSON.
 
 {{
-    "extraction_reasoning": "Brief explanation",
     "line_items": [
-        {{"item_name": "Product Name", "quantity": 1, "rate": 10.5, "amount": 10.5}}
+        {{"item_name": "Product", "quantity": 1, "rate": 10.50, "amount": 10.50}}
     ],
-    "bill_total": 1000,
-    "subtotals": [],
+    "bill_total": 1000.00,
     "notes": ""
 }}
 
-FORMATTING RULES:
-- item_name: NO quotes inside - use spaces/apostrophes instead
-- NO newlines in any string value
-- Numbers only for quantity, rate, amount
-- Valid JSON structure REQUIRED
+RULES:
+- item_name: product/service names only, no quotes inside
+- quantity: number (default 1), rate: unit price, amount: line total
+- Skip: totals, taxes, discounts, fees
+- JSON valid, no extra text"""
 
-Content Rules:
-- Extract product/service lines only, skip totals/taxes/discounts
-- For each item: name, qty (1 if missing), rate, amount
-- If rate unclear, use amount value
-- Handwritten OK, do your best
-- Return ONLY the JSON object, no extra text"""
+RECONCILIATION_RETRY_PROMPT_TEMPLATE = """Verify extraction. Sum: {calculated_total}, Bill total: {actual_total}.
 
-RECONCILIATION_RETRY_PROMPT_TEMPLATE = """Extracted {item_count} items. Sum: {calculated_total}, Bill total: {actual_total}, Mismatch: {discrepancy}
+Items: {extracted_items}
 
-Items:
-{extracted_items}
-
-Check the image again. Did I miss items or misread numbers? Return ONLY this JSON with proper escaping:
+Review & correct:
+1. Missing items?
+2. Wrong quantities/rates/amounts?
+3. Included non-items (taxes/totals)?
 
 {{
-    "analysis": "What you found",
     "corrections": [
         {{"action": "add|remove|modify", "item_name": "name", "quantity": 1, "rate": 0, "amount": 100}}
     ],
-    "new_total": 0,
-    "confidence": 0.9
+    "new_total": 0
 }}
 
-CRITICAL FORMATTING RULES:
-- ESCAPE any quotes in item names: use \\" instead of "
-- NO newlines inside string values - keep everything on one line
-- NO unescaped special characters - properly escape all quotes
-- Each object must be valid JSON on its own
-- Return ONLY the JSON object, no extra text"""
+JSON only, no extra text."""
 
-VALIDATION_PROMPT_TEMPLATE = """Review this bill extraction for accuracy:
+VALIDATION_PROMPT_TEMPLATE = """Validate extraction. Items: {items_json}
+Bill total: {bill_total}, Calculated: {calculated_total}, Match: {matches}
 
-Extracted Items:
-{items_json}
+Verify:
+1. All items are products/services (skip taxes/totals)
+2. No duplicates
+3. amounts correct (qty × rate = amount)
 
-Bill Total: {bill_total}
-Calculated Total: {calculated_total}
-Match: {matches}
-
-Please verify:
-1. All line items are actual products/services (not taxes, fees, or totals)
-2. No duplicate items
-3. All amounts are correct (quantity × rate = amount)
-4. The sum matches the bill total
-
-Respond with:
 {{
-    "is_valid": true/false,
-    "issues": ["list of any issues found"],
-    "corrections": ["list of corrections needed"],
-    "confidence": 0-1
-}}"""
+    "is_valid": true,
+    "issues": [],
+    "confidence": 0.95
+}}
+
+JSON only."""
