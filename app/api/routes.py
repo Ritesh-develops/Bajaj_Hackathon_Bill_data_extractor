@@ -354,6 +354,17 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
         print(f"Tokens used: {metadata.get('token_usage', {}).get('total_tokens', 0)}")
         print(f"========== RESPONSE RETURNED ==========")
         
+        # Log exact JSON response for agent visibility
+        import json
+        response_dict = response.model_dump(by_alias=True)
+        response_json = json.dumps(response_dict, indent=2, default=str)
+        
+        print(f"\n========== EXACT JSON RESPONSE FOR AGENT ==========")
+        print(response_json)
+        print(f"========== END JSON RESPONSE ==========\n")
+        
+        logger.info(f"[IMAGE] [RESPONSE] JSON Response Structure:\n{response_json[:500]}...")
+        
         return response
         
     except ValueError as e:
@@ -575,6 +586,17 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         for page_no in sorted(page_timings.keys()):
             timings = page_timings[page_no]
             logger.info(f"[PDF] [TIMING] Page {page_no}: Total {timings['total']:.2f}s (extraction: {timings['extraction_only']:.2f}s)")
+        
+        # Log exact JSON response for agent visibility
+        import json
+        response_dict = response.model_dump(by_alias=True)
+        response_json = json.dumps(response_dict, indent=2, default=str)
+        
+        print(f"\n========== EXACT JSON RESPONSE FOR AGENT ==========")
+        print(response_json)
+        print(f"========== END JSON RESPONSE ==========\n")
+        
+        logger.info(f"[PDF] [RESPONSE] JSON Response Structure:\n{response_json[:500]}...")
         
         return response
         

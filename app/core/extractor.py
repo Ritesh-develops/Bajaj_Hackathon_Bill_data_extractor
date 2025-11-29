@@ -72,9 +72,9 @@ class GeminiExtractor:
                 continue
             
             item_name = str(item.get('item_name', '')).strip()
-            quantity = item.get('quantity', 1)
-            rate = item.get('rate', 0)
-            amount = item.get('amount', 0)
+            quantity = item.get('item_quantity') or item.get('quantity', 1)
+            rate = item.get('item_rate') or item.get('rate', 0)
+            amount = item.get('item_amount') or item.get('amount', 0)
             
             # Convert to float for validation
             try:
@@ -113,7 +113,7 @@ class GeminiExtractor:
                     logger.warning(f"Item math mismatch: {item_name} - calc:{calculated_amount}, actual:{amount}")
                     # Still include but flag as suspicious
             
-            # Clean and add item
+            # Clean and add item with proper key names
             cleaned_item = {
                 'item_name': item_name,
                 'item_quantity': quantity,
