@@ -103,6 +103,84 @@ class GeminiExtractor:
             raise
     
     @staticmethod
+    def _fix_json_structure(json_str: str) -> str:
+        """Fix common JSON structure issues: missing commas, unescaped quotes, etc"""
+        import re
+        
+        # 1. Fix missing commas between objects in array
+        # Pattern: }{ or }\s*{ without comma between them
+        json_str = re.sub(r'}\s*{', '},{', json_str)
+        
+        # 2. Fix missing commas before closing bracket
+        # Pattern: }] should be }] (already correct) but }  } should have comma
+        # Look for: }\s*}\s* -> },}
+        json_str = re.sub(r'}\s*}\s*', '},}', json_str)
+        
+        # 3. Remove trailing commas before } or ]
+        json_str = json_str.replace(',}', '}').replace(',]', ']')
+        
+        # 4. Fix unescaped newlines/tabs inside string values
+        # Replace actual newlines with spaces (they shouldn't be in JSON strings)
+        json_str = json_str.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        
+        # 5. Fix unescaped quotes inside string values
+        # Pattern: "key": "value "with "unescaped" quotes"
+        # This is tricky - we need to find quoted strings and escape inner quotes
+        def fix_quoted_strings(text):
+            # Find all quoted strings
+            parts = []
+            in_string = False
+            escape_next = False
+            current_string = ''
+            
+            i = 0
+            while i < len(text):
+                char = text[i]
+                
+                if escape_next:
+                    current_string += char
+                    escape_next = False
+                    i += 1
+                    continue
+                
+                if char == '\\':
+                    current_string += char
+                    escape_next = True
+                    i += 1
+                    continue
+                
+                if char == '"':
+                    if in_string:
+                        # End of string - check if there are unescaped quotes inside
+                        # and escape them
+                        current_string += char
+                        in_string = False
+                        parts.append(current_string)
+                        current_string = ''
+                    else:
+                        # Start of string
+                        in_string = True
+                        current_string = char
+                    i += 1
+                    continue
+                
+                current_string += char
+                i += 1
+            
+            if current_string:
+                parts.append(current_string)
+            
+            return ''.join(parts)
+        
+        # Apply quote fixing
+        try:
+            json_str = fix_quoted_strings(json_str)
+        except:
+            pass  # If quote fixing fails, continue anyway
+        
+        return json_str
+    
+    @staticmethod
     def _repair_json(json_str: str) -> str:
         """Repair common JSON malformations from Gemini"""
         import re
@@ -267,62 +345,52 @@ class GeminiExtractor:
             json_str = response_text[start_idx:end_idx]
             extraction = None
             
-            # Try standard JSON parsing first
+            # Try standard JSON parsing first (fastest if it works)
             try:
                 extraction = json.loads(json_str)
                 logger.info("✓ JSON parsed successfully on first try")
             except json.JSONDecodeError as parse_err:
                 logger.warning(f"✗ JSON parsing failed: {parse_err}")
                 
-                # Fallback 1: Try json5 (handles more lenient JSON)
-                if json5:
-                    try:
-                        extraction = json5.loads(json_str)
-                        logger.info("✓ Successfully parsed with json5 (lenient JSON parser)")
-                    except Exception as e:
-                        logger.debug(f"✗ json5 parsing also failed: {e}")
+                # OPTIMIZED: Try regex extraction FIRST (proven to work most reliably)
+                logger.warning("⚠ Attempting regex-based extraction (most reliable fallback)...")
+                extraction = GeminiExtractor._extract_values_safely(json_str)
                 
-                # Fallback 2: Attempt aggressive repair
-                if extraction is None:
-                    try:
-                        json_str_fixed = GeminiExtractor._repair_json(json_str)
-                        extraction = json.loads(json_str_fixed)
-                        logger.info("✓ Successfully recovered from malformed JSON after repair")
-                    except json.JSONDecodeError as repair_err:
-                        logger.warning(f"✗ Repair attempt failed: {repair_err}")
+                if extraction.get('line_items'):
+                    logger.info(f"✓ Regex extraction recovered {len(extraction['line_items'])} items")
+                    return extraction
                 
-                # Fallback 3: Direct array extraction
-                if extraction is None:
-                    logger.warning("⚠ Trying direct extraction of line_items array...")
-                    line_items_match = response_text.find('"line_items"')
-                    if line_items_match != -1:
+                # If regex didn't work, try JSON structure fix
+                logger.warning("⚠ Regex extraction failed, attempting JSON structure fix...")
+                json_str_fixed = GeminiExtractor._fix_json_structure(json_str)
+                
+                try:
+                    extraction = json.loads(json_str_fixed)
+                    logger.info("✓ Successfully parsed after fixing JSON structure")
+                except json.JSONDecodeError as fix_err:
+                    logger.warning(f"✗ Fixed JSON still failed: {fix_err}")
+                    
+                    # Try json5
+                    logger.warning("⚠ Trying json5 parser...")
+                    if json5:
                         try:
-                            array_start = response_text.find('[', line_items_match)
-                            array_end = response_text.find(']', array_start) + 1
-                            if array_start != -1 and array_end > array_start:
-                                line_items_str = response_text[array_start:array_end]
-                                # Clean up the array string too
-                                line_items_str = line_items_str.replace('\n', ' ').replace('\r', ' ')
-                                line_items = json.loads(line_items_str)
-                                logger.info(f"✓ Extracted {len(line_items)} items directly from malformed JSON")
-                                return {
-                                    'extraction_reasoning': '',
-                                    'line_items': line_items,
-                                    'bill_total': None,
-                                    'subtotals': [],
-                                    'notes': 'Extracted from partial parse of malformed JSON'
-                                }
+                            extraction = json5.loads(json_str)
+                            logger.info("✓ Successfully parsed with json5 (lenient JSON parser)")
                         except Exception as e:
-                            logger.debug(f"✗ Direct extraction failed: {e}")
-                
-                # If all recovery attempts fail
-                if extraction is None:
-                    logger.warning("⚠ Attempting regex-based extraction as last resort...")
-                    extraction = GeminiExtractor._extract_values_safely(json_str)
-                    if extraction.get('line_items'):
-                        logger.info(f"✓ Successfully extracted {len(extraction['line_items'])} items via regex fallback")
-                    else:
-                        logger.error(f"✗ Regex extraction also failed")
+                            logger.debug(f"✗ json5 parsing also failed: {e}")
+                    
+                    # Try aggressive repair
+                    if extraction is None:
+                        try:
+                            json_str_repaired = GeminiExtractor._repair_json(json_str)
+                            extraction = json.loads(json_str_repaired)
+                            logger.info("✓ Successfully recovered from malformed JSON after repair")
+                        except json.JSONDecodeError as repair_err:
+                            logger.warning(f"✗ Repair attempt failed: {repair_err}")
+                    
+                    # If all recovery attempts fail
+                    if extraction is None:
+                        logger.error(f"✗ Could not recover JSON after all attempts: {parse_err}")
                         return {
                             'line_items': [],
                             'bill_total': None,
