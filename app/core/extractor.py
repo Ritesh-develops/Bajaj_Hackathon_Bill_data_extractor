@@ -273,8 +273,10 @@ class ExtractionOrchestrator:
         }
         
         try:
-            logger.info(f"Phase 2: Starting extraction for page {page_no}")
+            logger.info(f"[EXTRACTOR] Phase 2: Starting extraction for page {page_no}")
             extraction_result = self.extractor.extract_from_image(image_bytes, page_no)
+            
+            logger.info(f"[EXTRACTOR] Phase 2: Gemini response received for page {page_no}")
             
             usage_data = extraction_result.get('usage_metadata', {})
             if usage_data:
@@ -286,61 +288,68 @@ class ExtractionOrchestrator:
                     'input_tokens': self.total_tokens['input_tokens'],
                     'output_tokens': self.total_tokens['output_tokens']
                 }
+                logger.info(f"[EXTRACTOR] Token usage - Total: {usage_data.get('total_tokens', 0)}, Input: {usage_data.get('input_tokens', 0)}, Output: {usage_data.get('output_tokens', 0)}")
             
             raw_items = self._convert_to_internal_format(extraction_result.get('line_items', []))
             bill_total = extraction_result.get('bill_total')
             
+            logger.info(f"[EXTRACTOR] Phase 2: Raw items extracted: {len(raw_items)}, Bill total: {bill_total}")
+            
             if not raw_items:
-                logger.warning(f"No items extracted from page {page_no}")
-                logger.info(f"Extraction notes: {extraction_result.get('notes')}")
-                logger.info(f"Extraction reasoning: {extraction_result.get('extraction_reasoning')}")
+                logger.warning(f"[EXTRACTOR] No items extracted from page {page_no}")
+                logger.info(f"[EXTRACTOR] Extraction notes: {extraction_result.get('notes')}")
+                logger.info(f"[EXTRACTOR] Extraction reasoning: {extraction_result.get('extraction_reasoning')}")
                 
                 metadata['warnings'].append("No line items found in document")
                 metadata['extraction_notes'] = extraction_result.get('notes', '')
-                metadata['extraction_reasoning'] = extraction_result.get('extraction_reasoning', '')[:500]  # First 500 chars
+                metadata['extraction_reasoning'] = extraction_result.get('extraction_reasoning', '')[:500]
                 
                 return [], Decimal('0.00'), metadata
             
-            logger.info(f"Phase 3: Validating and cleaning {len(raw_items)} items")
+            logger.info(f"[EXTRACTOR] Phase 3: Validating and cleaning {len(raw_items)} items")
             
             cleaned_items, clean_report = self.validator.validate_and_clean(
                 raw_items,
                 bill_total
             )
             
+            logger.info(f"[EXTRACTOR] Phase 3: Cleaned items: {len(cleaned_items)}, Warnings: {len(clean_report.get('warnings', []))}")
             metadata['warnings'].extend(clean_report.get('warnings', []))
             
             calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
             
-            logger.info(f"Calculated total: {calculated_total}, Bill total: {bill_total}")
+            logger.info(f"[EXTRACTOR] Phase 3: Calculated total: {calculated_total}, Bill total: {bill_total}")
             
             if bill_total is not None:
                 is_match, discrepancy, status = self.reconciler.reconcile(
                     calculated_total,
-                    Decimal(str(bill_total))
+                    ExtractionOrchestrator._safe_decimal_convert(bill_total, 0)
                 )
                 
                 metadata['discrepancy'] = discrepancy
                 metadata['reconciliation_status'] = status
                 
+                logger.info(f"[EXTRACTOR] Phase 3: Reconciliation - Match: {is_match}, Discrepancy: {discrepancy}, Status: {status}")
+                
                 should_retry = (
                     not is_match 
                     and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS
-                    and discrepancy > (Decimal(str(bill_total)) * Decimal(str(MIN_DISCREPANCY_FOR_RETRY)))
+                    and discrepancy > (ExtractionOrchestrator._safe_decimal_convert(bill_total, 0) * Decimal(str(MIN_DISCREPANCY_FOR_RETRY)))
                 )
                 
                 if should_retry:
-                    logger.info(f"Phase 4: Triggering retry (discrepancy: {discrepancy}, status: {status})")
+                    logger.info(f"[EXTRACTOR] Phase 4: Triggering retry (discrepancy: {discrepancy}, status: {status})")
                     
                     retry_response = self.extractor.retry_extraction(
                         image_bytes,
                         cleaned_items,
                         calculated_total,
-                        Decimal(str(bill_total)),
+                        ExtractionOrchestrator._safe_decimal_convert(bill_total, 0),
                         retry_count=1
                     )
                     
                     metadata['retry_attempts'] = 1
+                    logger.info(f"[EXTRACTOR] Phase 4: Retry response received")
                     
                     retry_usage = retry_response.get('usage_metadata', {})
                     if retry_usage:
@@ -352,8 +361,10 @@ class ExtractionOrchestrator:
                             'input_tokens': self.total_tokens['input_tokens'],
                             'output_tokens': self.total_tokens['output_tokens']
                         }
+                        logger.info(f"[EXTRACTOR] Phase 4: Retry tokens - Total: {retry_usage.get('total_tokens', 0)}")
                     
                     if retry_response.get('corrections'):
+                        logger.info(f"[EXTRACTOR] Phase 4: Applying {len(retry_response['corrections'])} corrections")
                         cleaned_items = self._apply_corrections(
                             cleaned_items,
                             retry_response['corrections']
@@ -362,7 +373,7 @@ class ExtractionOrchestrator:
                         calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
                         is_match, discrepancy, status = self.reconciler.reconcile(
                             calculated_total,
-                            Decimal(str(bill_total))
+                            ExtractionOrchestrator._safe_decimal_convert(bill_total, 0)
                         )
                         
                         metadata['discrepancy'] = discrepancy
@@ -370,13 +381,19 @@ class ExtractionOrchestrator:
                         metadata['warnings'].append(
                             f"Applied {len(retry_response['corrections'])} corrections from retry"
                         )
+                        logger.info(f"[EXTRACTOR] Phase 4: After corrections - New discrepancy: {discrepancy}, Status: {status}")
+                    else:
+                        logger.warning(f"[EXTRACTOR] Phase 4: Retry returned no corrections")
+                else:
+                    logger.info(f"[EXTRACTOR] Phase 3: No retry needed - Match: {is_match}")
             
             metadata['extraction_confidence'] = 0.95
+            logger.info(f"[EXTRACTOR] Extraction complete - Items: {len(cleaned_items)}, Total: {calculated_total}, Status: {metadata['reconciliation_status']}")
             
             return cleaned_items, calculated_total, metadata
             
         except Exception as e:
-            logger.error(f"Error in extraction workflow: {e}")
+            logger.error(f"[EXTRACTOR] [ERROR] Error in extraction workflow: {e}", exc_info=True)
             metadata['reconciliation_status'] = 'error'
             metadata['warnings'].append(str(e))
             return [], Decimal('0.00'), metadata

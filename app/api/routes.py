@@ -41,12 +41,15 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
     """
     try:
         document_url = str(request.document)
-        logger.info(f"Received extraction request for: {document_url}")
+        logger.info(f"========== EXTRACTION REQUEST START ==========")
+        logger.info(f"Document URL: {document_url}")
+        logger.info(f"Request timestamp: {__import__('datetime').datetime.now().isoformat()}")
         
         logger.info("Downloading document...")
         document_bytes = await download_document(document_url)
         
         if not document_bytes:
+            logger.error("Failed to download document - returned None")
             raise ValueError("Failed to download document")
         
         logger.info(f"Downloaded {len(document_bytes)} bytes")
@@ -55,18 +58,47 @@ async def extract_bill_data(request: BillItemRequest) -> BillExtractionResponse:
         logger.info(f"Detected document type: {'PDF' if is_pdf else 'Image'}")
         
         if is_pdf:
-            return await process_pdf_extraction(document_bytes)
+            logger.info("Processing as PDF document")
+            result = await process_pdf_extraction(document_bytes)
         else:
-            return await process_image_extraction(document_bytes)
+            logger.info("Processing as Image document")
+            result = await process_image_extraction(document_bytes)
+        
+        logger.info(f"Extraction result - Success: {result.is_success}, Items: {result.data.total_item_count if result.data else 0}, Tokens: {result.token_usage.total_tokens}")
+        logger.info(f"========== EXTRACTION REQUEST END ==========")
+        
+        if result.is_success:
+            print(f"\n{'='*60}")
+            print(f"FINAL RESULT: SUCCESS ✓")
+            print(f"Items extracted: {result.data.total_item_count}")
+            print(f"Total tokens: {result.token_usage.total_tokens}")
+            print(f"{'='*60}\n")
+        else:
+            print(f"\n{'='*60}")
+            print(f"FINAL RESULT: FAILED ✗")
+            print(f"Error: {result.error}")
+            print(f"{'='*60}\n")
+        
+        return result
         
     except ValueError as e:
-        logger.error(f"Validation error: {e}")
+        logger.error(f"[VALIDATION ERROR] {str(e)}")
+        logger.info(f"========== EXTRACTION REQUEST END (FAILED) ==========")
+        print(f"\n{'='*60}")
+        print(f"VALIDATION ERROR ✗")
+        print(f"Error: {str(e)}")
+        print(f"{'='*60}\n")
         return BillExtractionResponse(
             is_success=False,
             error=f"Invalid request: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
+        logger.error(f"[UNEXPECTED ERROR] {str(e)}", exc_info=True)
+        logger.info(f"========== EXTRACTION REQUEST END (FAILED) ==========")
+        print(f"\n{'='*60}")
+        print(f"UNEXPECTED ERROR ✗")
+        print(f"Error: {str(e)}")
+        print(f"{'='*60}\n")
         return BillExtractionResponse(
             is_success=False,
             error=f"Internal server error: {str(e)}"
@@ -258,7 +290,11 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
             page_no="1"
         )
         
+        logger.info(f"Extraction complete - Cleaned items: {len(cleaned_items)}, Reconciliation status: {metadata.get('reconciliation_status')}")
+        logger.info(f"Token usage - Total: {metadata.get('token_usage', {}).get('total_tokens', 0)}, Input: {metadata.get('token_usage', {}).get('input_tokens', 0)}, Output: {metadata.get('token_usage', {}).get('output_tokens', 0)}")
+        
         if not cleaned_items:
+            logger.warning("No line items extracted from document")
             return BillExtractionResponse(
                 is_success=False,
                 token_usage={
@@ -269,6 +305,7 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
                 error="No line items could be extracted from the document"
             )
         
+        logger.info(f"Creating response with {len(cleaned_items)} items...")
         bill_items = [
             {
                 "item_name": item['item_name'],
@@ -278,6 +315,8 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
             }
             for item in cleaned_items
         ]
+        
+        logger.info(f"Item details: {[(item['item_name'][:30], item['item_amount']) for item in bill_items[:5]]}")
         
         extracted_data = ExtractedBillData(
             pagewise_line_items=[
@@ -301,14 +340,23 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
         )
         
         logger.info(
-            f"Successfully extracted {len(cleaned_items)} items. "
-            f"Status: {metadata['reconciliation_status']}, Tokens: {metadata.get('token_usage', {}).get('total_tokens', 0)}"
+            f"[IMAGE] Final response ready - Items: {len(cleaned_items)}, "
+            f"Tokens: {metadata.get('token_usage', {}).get('total_tokens', 0)}, Status: SUCCESS"
         )
+        
+        # Print to stdout for visibility in Render logs
+        print(f"========== IMAGE EXTRACTION SUCCESS ==========")
+        print(f"Items extracted: {len(cleaned_items)}")
+        print(f"Total amount: {sum(float(item['item_amount']) for item in bill_items)}")
+        print(f"Reconciliation status: {metadata.get('reconciliation_status')}")
+        print(f"Tokens used: {metadata.get('token_usage', {}).get('total_tokens', 0)}")
+        print(f"========== RESPONSE RETURNED ==========")
         
         return response
         
     except ValueError as e:
         logger.error(f"Validation error: {e}")
+        print(f"[IMAGE] VALIDATION ERROR: {str(e)}")
         return BillExtractionResponse(
             is_success=False,
             token_usage={'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0},
@@ -316,6 +364,7 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
         )
     except Exception as e:
         logger.error(f"Unexpected error in image processing: {e}", exc_info=True)
+        print(f"[IMAGE] UNEXPECTED ERROR: {str(e)}")
         return BillExtractionResponse(
             is_success=False,
             token_usage={'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0},
@@ -334,10 +383,10 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         BillExtractionResponse with extracted data from all pages
     """
     try:
-        logger.info("Converting PDF to images...")
+        logger.info(f"[PDF] Converting PDF to images (size: {len(pdf_bytes)} bytes)...")
         image_list = convert_pdf_to_images(pdf_bytes)
         
-        logger.info(f"Converted PDF to {len(image_list)} page(s)")
+        logger.info(f"[PDF] Converted PDF to {len(image_list)} page(s)")
         
         all_items = []
         pagewise_items = []
@@ -345,10 +394,12 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         extraction_diagnostics = []
         
         for page_no, image_bytes in enumerate(image_list, start=1):
-            logger.info(f"Processing page {page_no}...")
+            logger.info(f"[PDF] Processing page {page_no}/{len(image_list)} (size: {len(image_bytes)} bytes)...")
             
             processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
             processed_bytes = ImageProcessor.image_to_bytes(processed_image)
+            
+            logger.info(f"[PDF] Page {page_no} - Processed image to {len(processed_bytes)} bytes")
             
             cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
                 processed_bytes,
@@ -360,8 +411,10 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
             total_token_usage['input_tokens'] += page_token_usage.get('input_tokens', 0)
             total_token_usage['output_tokens'] += page_token_usage.get('output_tokens', 0)
             
+            logger.info(f"[PDF] Page {page_no} - Extraction status: {metadata.get('reconciliation_status')}, Items found: {len(cleaned_items)}, Tokens: {page_token_usage.get('total_tokens', 0)}")
+            
             if cleaned_items:
-                logger.info(f"Page {page_no}: Extracted {len(cleaned_items)} items")
+                logger.info(f"[PDF] Page {page_no}: Extracted {len(cleaned_items)} items - {', '.join([item['item_name'][:30] for item in cleaned_items[:3]])}")
                 
                 bill_items = [
                     {
@@ -382,6 +435,7 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     )
                 )
             else:
+                logger.warning(f"[PDF] Page {page_no}: No items extracted. Notes: {metadata.get('extraction_notes', '')}")
                 extraction_diagnostics.append({
                     "page": page_no,
                     "notes": metadata.get('extraction_notes', ''),
@@ -389,16 +443,20 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                 })
         
         if not all_items:
+            logger.error(f"[PDF] No line items extracted from PDF after processing {len(image_list)} pages")
             diagnostic_msg = "No line items extracted from PDF. "
             if extraction_diagnostics:
                 for diag in extraction_diagnostics:
                     diagnostic_msg += f"Page {diag['page']}: {diag['notes']} | "
             
+            logger.error(f"[PDF] Diagnostic info: {diagnostic_msg}")
             return BillExtractionResponse(
                 is_success=False,
                 token_usage=total_token_usage,
                 error=diagnostic_msg or "No line items could be extracted from the PDF. This may be a handwritten or scanned document that requires manual review."
             )
+        
+        logger.info(f"[PDF] Successfully extracted {len(all_items)} total items from {len(image_list)} page(s)")
         
         extracted_data = ExtractedBillData(
             pagewise_line_items=pagewise_items,
@@ -412,21 +470,32 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         )
         
         logger.info(
-            f"Successfully extracted {len(all_items)} total items from {len(image_list)} page(s). "
-            f"Tokens: {total_token_usage.get('total_tokens', 0)}"
+            f"[PDF] Final response ready - Items: {len(all_items)}, Pages: {len(image_list)}, "
+            f"Tokens: {total_token_usage.get('total_tokens', 0)}, Status: SUCCESS"
         )
+        
+        # Print to stdout for visibility in Render logs
+        print(f"========== PDF EXTRACTION SUCCESS ==========")
+        print(f"Pages processed: {len(image_list)}")
+        print(f"Total items extracted: {len(all_items)}")
+        total_amount = sum(float(item['item_amount']) for page in pagewise_items for item in page.bill_items)
+        print(f"Total amount: {total_amount}")
+        print(f"Tokens used: {total_token_usage.get('total_tokens', 0)}")
+        print(f"========== PDF RESPONSE RETURNED ==========")
         
         return response
         
     except ValueError as e:
-        logger.error(f"Validation error: {e}")
+        logger.error(f"[PDF] [VALIDATION ERROR] {str(e)}")
+        print(f"[PDF] VALIDATION ERROR: {str(e)}")
         return BillExtractionResponse(
             is_success=False,
             token_usage={'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0},
             error=f"Invalid request: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Unexpected error in PDF processing: {e}", exc_info=True)
+        logger.error(f"[PDF] [UNEXPECTED ERROR] {str(e)}", exc_info=True)
+        print(f"[PDF] UNEXPECTED ERROR: {str(e)}")
         return BillExtractionResponse(
             is_success=False,
             token_usage={'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0},
