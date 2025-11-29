@@ -382,21 +382,32 @@ class ExtractionOrchestrator:
             return [], Decimal('0.00'), metadata
     
     @staticmethod
+    def _safe_decimal_convert(value, default=0):
+        """Safely convert any value to Decimal"""
+        if value is None:
+            return Decimal(str(default))
+        try:
+            # Handle string with commas or spaces
+            if isinstance(value, str):
+                value = value.strip().replace(',', '').replace(' ', '')
+                if not value:
+                    return Decimal(str(default))
+            return Decimal(str(value))
+        except Exception:
+            return Decimal(str(default))
+
+    @staticmethod
     def _convert_to_internal_format(items: List[Dict]) -> List[Dict]:
         """Convert Gemini extraction format to internal format"""
         converted = []
         
         for item in items:
             try:
-                rate_value = item.get('rate')
-                if rate_value is None:
-                    rate_value = 0
-                
                 converted_item = {
                     'item_name': str(item.get('item_name', '')),
-                    'item_quantity': Decimal(str(item.get('quantity', 1))),  # Default to 1 for handwritten
-                    'item_rate': Decimal(str(rate_value)),
-                    'item_amount': Decimal(str(item.get('amount', 0)))  # Use 'amount' key from Gemini response
+                    'item_quantity': ExtractionOrchestrator._safe_decimal_convert(item.get('quantity'), 1),
+                    'item_rate': ExtractionOrchestrator._safe_decimal_convert(item.get('rate'), 0),
+                    'item_amount': ExtractionOrchestrator._safe_decimal_convert(item.get('amount'), 0)
                 }
                 converted.append(converted_item)
             except Exception as e:
@@ -412,15 +423,11 @@ class ExtractionOrchestrator:
             action = correction.get('action', '').lower()
             
             if action == 'add':
-                rate_value = correction.get('rate', 0)
-                if rate_value is None:
-                    rate_value = 0
-                    
                 items.append({
                     'item_name': correction.get('item_name'),
-                    'item_quantity': Decimal(str(correction.get('quantity', 1))),  # Default to 1
-                    'item_rate': Decimal(str(rate_value)),
-                    'item_amount': Decimal(str(correction.get('amount', 0)))
+                    'item_quantity': ExtractionOrchestrator._safe_decimal_convert(correction.get('quantity'), 1),
+                    'item_rate': ExtractionOrchestrator._safe_decimal_convert(correction.get('rate'), 0),
+                    'item_amount': ExtractionOrchestrator._safe_decimal_convert(correction.get('amount'), 0)
                 })
             
             elif action == 'remove':
@@ -432,14 +439,8 @@ class ExtractionOrchestrator:
             elif action == 'modify':
                 for item in items:
                     if item.get('item_name') == correction.get('item_name'):
-                        rate_value = correction.get('rate')
-                        if rate_value is None:
-                            rate_value = item.get('item_rate', 0)
-                        
-                        item.update({
-                            'item_quantity': Decimal(str(correction.get('quantity', item['item_quantity']))),
-                            'item_rate': Decimal(str(rate_value)),
-                            'item_amount': Decimal(str(correction.get('amount', item['item_amount'])))
-                        })
+                        item['item_quantity'] = ExtractionOrchestrator._safe_decimal_convert(correction.get('quantity'), item.get('item_quantity', 1))
+                        item['item_rate'] = ExtractionOrchestrator._safe_decimal_convert(correction.get('rate'), item.get('item_rate', 0))
+                        item['item_amount'] = ExtractionOrchestrator._safe_decimal_convert(correction.get('amount'), item.get('item_amount', 0))
         
         return items

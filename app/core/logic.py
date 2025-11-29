@@ -7,6 +7,21 @@ from app.config import DOUBLE_COUNT_KEYWORDS
 logger = logging.getLogger(__name__)
 
 
+def safe_decimal_convert(value, default=0):
+    """Safely convert any value to Decimal"""
+    if value is None:
+        return Decimal(str(default))
+    try:
+        # Handle string with commas or spaces
+        if isinstance(value, str):
+            value = value.strip().replace(',', '').replace(' ', '')
+            if not value:
+                return Decimal(str(default))
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(str(default))
+
+
 class DataCleaner:
     """Utilities for cleaning extracted data"""
     
@@ -92,7 +107,7 @@ class DoubleCountingGuard:
             return False
         
         total = sum(
-            Decimal(str(item.get('item_amount', 0))) 
+            safe_decimal_convert(item.get('item_amount', 0))
             for item in items
         )
         
@@ -120,11 +135,11 @@ class DoubleCountingGuard:
         
         for idx, item in enumerate(items):
             item_name = item.get('item_name', '').lower()
-            amount = Decimal(str(item.get('item_amount', 0)))
+            amount = safe_decimal_convert(item.get('item_amount', 0))
             
             if DoubleCountingGuard.is_double_count_keyword(item_name):
-                qty = Decimal(str(item.get('item_quantity', 0)))
-                rate = Decimal(str(item.get('item_rate', 0)))
+                qty = safe_decimal_convert(item.get('item_quantity', 0))
+                rate = safe_decimal_convert(item.get('item_rate', 0))
                 
                 if qty <= 0 or rate == 0:
                     logger.info(f"Removed item '{item_name}' - keyword + suspiciously low qty/rate")
@@ -172,7 +187,7 @@ class ReconciliationEngine:
         """Calculate sum of all line item amounts"""
         try:
             total = sum(
-                Decimal(str(item.get('item_amount', 0)))
+                safe_decimal_convert(item.get('item_amount', 0))
                 for item in items
             )
             return total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -213,9 +228,9 @@ class ReconciliationEngine:
         
         for idx, item in enumerate(items):
             try:
-                quantity = Decimal(str(item.get('item_quantity', 0)))
-                rate = Decimal(str(item.get('item_rate', 0)))
-                amount = Decimal(str(item.get('item_amount', 0)))
+                quantity = safe_decimal_convert(item.get('item_quantity', 0))
+                rate = safe_decimal_convert(item.get('item_rate', 0))
+                amount = safe_decimal_convert(item.get('item_amount', 0))
                 
                 calculated = quantity * rate
                 
@@ -262,9 +277,9 @@ class ExtractedDataValidator:
                     "item_name": self.cleaner.clean_item_name(
                         item.get('item_name', '')
                     ),
-                    "item_quantity": Decimal(str(item.get('item_quantity', 1))), 
-                    "item_rate": Decimal(str(item.get('item_rate', 0))),
-                    "item_amount": Decimal(str(item.get('item_amount', 0)))
+                    "item_quantity": safe_decimal_convert(item.get('item_quantity', 1)), 
+                    "item_rate": safe_decimal_convert(item.get('item_rate', 0)),
+                    "item_amount": safe_decimal_convert(item.get('item_amount', 0))
                 }
                 
                 if clean_item["item_rate"] > 0:
