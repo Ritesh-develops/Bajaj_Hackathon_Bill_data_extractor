@@ -105,33 +105,153 @@ class GeminiExtractor:
     @staticmethod
     def _repair_json(json_str: str) -> str:
         """Repair common JSON malformations from Gemini"""
-        # Remove trailing commas
-        json_str = json_str.replace(',]', ']').replace(',}', '}')
-        
-        # Try to fix common quote issues - replace problematic quote patterns
-        # This handles cases where Gemini puts unescaped quotes in string values
         import re
         
-        # Simple approach: just remove extra quotes or escape them
-        # Find patterns like: "key": "value with "quote" inside"
-        # and try to escape the inner quotes
-        lines = json_str.split('\n')
-        fixed_lines = []
+        # Remove trailing commas first
+        json_str = json_str.replace(',]', ']').replace(',}', '}')
         
-        for line in lines:
-            # If line has quotes and looks like it has unescaped inner quotes
-            if '":' in line and line.count('"') > 4:  # Likely has extra quotes
-                # Try to escape any problematic quote sequences
-                line = line.replace('": "', '": "').replace('" "', '" "')
-            fixed_lines.append(line)
+        # Fix unescaped newlines inside string values
+        # Replace literal newlines with \n escape sequence
+        json_str = json_str.replace('\n', ' ').replace('\r', ' ')
         
-        json_str = '\n'.join(fixed_lines)
+        # Fix unescaped quotes in string values
+        # Pattern: Find "key": "value...content with unescaped "quote"...more content"
+        # This is complex, so we use a simple heuristic: find problematic quote patterns
+        
+        # Handle pattern like: "item_name": "ABC "XYZ" DEF"
+        # by replacing middle quotes with escaped quotes
+        def fix_quoted_value(match):
+            prefix = match.group(1)  # "key": "
+            content = match.group(2)  # the value
+            suffix = match.group(3)   # "
+            
+            # Escape any unescaped quotes in content
+            # But don't escape quotes that are already escaped
+            content = re.sub(r'(?<!\\)"', r'\\"', content)
+            return prefix + content + suffix
+        
+        # Match pattern: "key": "...content..."
+        # This regex finds quoted values and fixes them
+        json_str = re.sub(r'("(?:item_name|item_quantity|item_rate|item_amount|extraction_reasoning|notes)":\s*)"([^"]*(?:"[^"]*)*)"', 
+                         lambda m: m.group(1) + '"' + m.group(2).replace('"', '\\"') + '"', json_str)
+        
         return json_str
+    
+    @staticmethod
+    def _extract_values_safely(json_str: str) -> Dict:
+        """Extract values from malformed JSON using regex as fallback - AGGRESSIVE approach"""
+        import re
+        
+        result = {
+            'extraction_reasoning': '',
+            'line_items': [],
+            'bill_total': None,
+            'subtotals': [],
+            'notes': ''
+        }
+        
+        try:
+            logger.info("🔍 Starting aggressive regex extraction...")
+            
+            # Try to extract bill_total
+            bill_match = re.search(r'"bill_total"\s*:\s*([\d.]+)', json_str)
+            if bill_match:
+                result['bill_total'] = float(bill_match.group(1))
+                logger.debug(f"Found bill_total: {result['bill_total']}")
+            
+            # NEW APPROACH: Find ALL item_name, quantity, rate, amount patterns
+            # and group them into items based on proximity
+            
+            # Extract all item_name values (including those with escaped quotes or problematic quotes)
+            # Match both clean names and names with escaped/unescaped quotes
+            item_names = []
+            
+            # Pattern 1: Clean item names without issues
+            clean_names = re.findall(r'"item_name"\s*:\s*"([^"]*)"', json_str)
+            item_names.extend(clean_names)
+            
+            # Pattern 2: Try to catch names that have unescaped quotes causing issues
+            # Look for item_name followed by colon and quote, then grab everything until we hit quantity/rate/amount
+            broken_names = re.findall(r'"item_name"\s*:\s*"([^"]+(?:"[^"]*)*?)"\s*[,}]', json_str)
+            for name in broken_names:
+                if name not in item_names:
+                    item_names.append(name)
+            
+            logger.debug(f"Found {len(item_names)} item names via regex patterns")
+            
+            # If still no names found, try even more aggressive extraction
+            if not item_names:
+                # Look for pattern: item_name: followed by any content until quantity:
+                aggressive_pattern = r'"item_name"\s*:\s*"(.*?)"\s*,?\s*"(?:quantity|rate|amount)"'
+                aggressive_names = re.findall(aggressive_pattern, json_str, re.DOTALL)
+                item_names.extend([n.replace('\n', ' ').strip() for n in aggressive_names])
+                logger.debug(f"Aggressive pattern found {len(aggressive_names)} additional names")
+            
+            # For each item_name, find the next quantity, rate, amount
+            for i, name in enumerate(item_names):
+                try:
+                    # Clean the name
+                    name = name.replace('\n', ' ').replace('\r', ' ').strip()
+                    if not name:
+                        continue
+                    
+                    # Find the position of this item_name
+                    # Use flexible matching that handles escaped quotes
+                    pattern = rf'"item_name"\s*:\s*"[^"]*{re.escape(name[:20])}'
+                    match = re.search(pattern, json_str)
+                    
+                    if not match:
+                        # Try without escaping if exact match fails
+                        pattern_alt = rf'"item_name"\s*:\s*".*?{name[:20]}'
+                        match = re.search(pattern_alt, json_str, re.DOTALL)
+                    
+                    if not match:
+                        logger.debug(f"Could not locate item_name '{name[:30]}...' in JSON")
+                        continue
+                    
+                    start_pos = match.end()
+                    # Look for quantity, rate, amount within next 500 chars (increased from 300)
+                    chunk = json_str[start_pos:start_pos + 500]
+                    
+                    item = {'item_name': name}
+                    
+                    # Extract quantity
+                    qty_match = re.search(r'"quantity"\s*:\s*([\d.]+)', chunk)
+                    item['quantity'] = float(qty_match.group(1)) if qty_match else 1
+                    
+                    # Extract rate
+                    rate_match = re.search(r'"rate"\s*:\s*([\d.]+)', chunk)
+                    item['rate'] = float(rate_match.group(1)) if rate_match else 0
+                    
+                    # Extract amount
+                    amount_match = re.search(r'"amount"\s*:\s*([\d.]+)', chunk)
+                    item['amount'] = float(amount_match.group(1)) if amount_match else 0
+                    
+                    # Only add if we found at least quantity or amount
+                    if item['quantity'] > 0 or item['amount'] > 0:
+                        result['line_items'].append(item)
+                        logger.debug(f"✓ Extracted: {name[:40]} - qty:{item['quantity']}, amt:{item['amount']}")
+                    else:
+                        logger.debug(f"✗ Skipped: {name[:40]} - no valid numbers found")
+                    
+                except Exception as e:
+                    logger.debug(f"Error extracting item {i} '{name[:30]}': {e}")
+                    continue
+            
+            logger.info(f"✓ Regex extraction found {len(result['line_items'])} items")
+            
+        except Exception as e:
+            logger.error(f"Regex extraction error: {e}")
+        
+        return result
     
     @staticmethod
     def _parse_response(response_text: str) -> Dict:
         """Parse Gemini response and extract JSON with aggressive recovery"""
         try:
+            # Pre-process raw response: clean up obvious formatting issues
+            response_text = response_text.replace('\r\n', ' ').replace('\n', ' ')
+            
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
             
@@ -150,30 +270,30 @@ class GeminiExtractor:
             # Try standard JSON parsing first
             try:
                 extraction = json.loads(json_str)
-                logger.info("JSON parsed successfully on first try")
+                logger.info("✓ JSON parsed successfully on first try")
             except json.JSONDecodeError as parse_err:
-                logger.warning(f"JSON parsing failed: {parse_err}")
+                logger.warning(f"✗ JSON parsing failed: {parse_err}")
                 
                 # Fallback 1: Try json5 (handles more lenient JSON)
                 if json5:
                     try:
                         extraction = json5.loads(json_str)
-                        logger.info("Successfully parsed with json5 (lenient JSON parser)")
+                        logger.info("✓ Successfully parsed with json5 (lenient JSON parser)")
                     except Exception as e:
-                        logger.debug(f"json5 parsing also failed: {e}")
+                        logger.debug(f"✗ json5 parsing also failed: {e}")
                 
-                # Fallback 2: Attempt repair with trailing comma fix
+                # Fallback 2: Attempt aggressive repair
                 if extraction is None:
                     try:
                         json_str_fixed = GeminiExtractor._repair_json(json_str)
                         extraction = json.loads(json_str_fixed)
-                        logger.info("Successfully recovered from malformed JSON after repair")
-                    except json.JSONDecodeError:
-                        logger.warning("Repair attempt failed")
+                        logger.info("✓ Successfully recovered from malformed JSON after repair")
+                    except json.JSONDecodeError as repair_err:
+                        logger.warning(f"✗ Repair attempt failed: {repair_err}")
                 
                 # Fallback 3: Direct array extraction
                 if extraction is None:
-                    logger.warning("Trying direct extraction of line_items array...")
+                    logger.warning("⚠ Trying direct extraction of line_items array...")
                     line_items_match = response_text.find('"line_items"')
                     if line_items_match != -1:
                         try:
@@ -181,8 +301,10 @@ class GeminiExtractor:
                             array_end = response_text.find(']', array_start) + 1
                             if array_start != -1 and array_end > array_start:
                                 line_items_str = response_text[array_start:array_end]
+                                # Clean up the array string too
+                                line_items_str = line_items_str.replace('\n', ' ').replace('\r', ' ')
                                 line_items = json.loads(line_items_str)
-                                logger.info(f"Extracted {len(line_items)} items directly from malformed JSON")
+                                logger.info(f"✓ Extracted {len(line_items)} items directly from malformed JSON")
                                 return {
                                     'extraction_reasoning': '',
                                     'line_items': line_items,
@@ -191,17 +313,22 @@ class GeminiExtractor:
                                     'notes': 'Extracted from partial parse of malformed JSON'
                                 }
                         except Exception as e:
-                            logger.debug(f"Direct extraction failed: {e}")
+                            logger.debug(f"✗ Direct extraction failed: {e}")
                 
                 # If all recovery attempts fail
                 if extraction is None:
-                    logger.error(f"Could not recover JSON after all attempts: {parse_err}")
-                    return {
-                        'line_items': [],
-                        'bill_total': None,
-                        'subtotals': [],
-                        'notes': f'JSON parsing failed - could not recover: {parse_err}'
-                    }
+                    logger.warning("⚠ Attempting regex-based extraction as last resort...")
+                    extraction = GeminiExtractor._extract_values_safely(json_str)
+                    if extraction.get('line_items'):
+                        logger.info(f"✓ Successfully extracted {len(extraction['line_items'])} items via regex fallback")
+                    else:
+                        logger.error(f"✗ Regex extraction also failed")
+                        return {
+                            'line_items': [],
+                            'bill_total': None,
+                            'subtotals': [],
+                            'notes': f'JSON parsing failed - could not recover: {parse_err}'
+                        }
             
             if extraction:
                 return {
