@@ -9,6 +9,8 @@ from app.core.image_processing import ImageProcessor
 from app.core.extractor import ExtractionOrchestrator
 from decimal import Decimal
 import io
+import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -374,7 +376,7 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
 
 async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
     """
-    Process PDF extraction (multiple pages)
+    Process PDF extraction (multiple pages) with detailed timing
     
     Args:
         pdf_bytes: PDF file bytes
@@ -383,19 +385,27 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         BillExtractionResponse with extracted data from all pages
     """
     try:
-        logger.info(f"[PDF] Converting PDF to images (size: {len(pdf_bytes)} bytes)...")
-        image_list = convert_pdf_to_images(pdf_bytes)
+        time_start = time.time()
+        logger.info(f"[PDF] [TIMING START] Extraction started at {datetime.now().isoformat()}")
         
+        logger.info(f"[PDF] Converting PDF to images (size: {len(pdf_bytes)} bytes)...")
+        time_convert_start = time.time()
+        image_list = convert_pdf_to_images(pdf_bytes)
+        time_convert_end = time.time()
+        
+        logger.info(f"[PDF] [TIMING] PDF conversion took {time_convert_end - time_convert_start:.2f}s")
         logger.info(f"[PDF] Converted PDF to {len(image_list)} page(s)")
-        logger.info(f"[PDF] Starting concurrent page processing (max 3 concurrent)...")
+        logger.info(f"[PDF] Starting concurrent page processing (max 6 concurrent)...")
         
         all_items = []
         pagewise_items = []
         total_token_usage = {'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0}
         extraction_diagnostics = []
+        page_timings = {}
         
-        async def process_single_page(page_no: int, image_bytes: bytes) -> dict:
-            """Process a single PDF page"""
+        def process_single_page(page_no: int, image_bytes: bytes) -> dict:
+            """Process a single PDF page (synchronous - blocking API call)"""
+            page_time_start = time.time()
             logger.info(f"[PDF] Processing page {page_no}/{len(image_list)} (size: {len(image_bytes)} bytes)...")
             
             processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
@@ -403,13 +413,22 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
             
             logger.info(f"[PDF] Page {page_no} - Processed image to {len(processed_bytes)} bytes")
             
+            extraction_time_start = time.time()
             cleaned_items, reconciled_total, metadata = orchestrator.extract_bill(
                 processed_bytes,
                 page_no=str(page_no)
             )
+            extraction_time_end = time.time()
+            page_time_end = time.time()
+            
+            page_timings[page_no] = {
+                'total': page_time_end - page_time_start,
+                'extraction_only': extraction_time_end - extraction_time_start
+            }
             
             page_token_usage = metadata.get('token_usage', {})
             
+            logger.info(f"[PDF] Page {page_no} [TIMING] Extraction took {extraction_time_end - extraction_time_start:.2f}s, Total page time: {page_time_end - page_time_start:.2f}s")
             logger.info(f"[PDF] Page {page_no} - Extraction status: {metadata.get('reconciliation_status')}, Items found: {len(cleaned_items)}, Tokens: {page_token_usage.get('total_tokens', 0)}")
             
             if cleaned_items:
@@ -444,29 +463,29 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     'success': False
                 }
         
-        # Process pages concurrently (max 10 at a time for aggressive speed)
-        async def process_with_semaphore():
-            semaphore = asyncio.Semaphore(10)
-            
-            async def bounded_process(page_no, image_bytes):
-                async with semaphore:
-                    logger.info(f"[PDF] [CONCURRENT] Starting page {page_no}")
-                    result = await process_single_page(page_no, image_bytes)
-                    logger.info(f"[PDF] [CONCURRENT] Completed page {page_no}")
-                    return result
-            
-            tasks = [bounded_process(page_no, image_bytes) for page_no, image_bytes in enumerate(image_list, start=1)]
-            logger.info(f"[PDF] [CONCURRENT] Created {len(tasks)} tasks for concurrent processing (6 at a time)")
-            return await asyncio.gather(*tasks)
+        # Process pages with thread pool for true parallelism (Gemini API is blocking I/O)
+        import concurrent.futures
         
-        # Run concurrent processing
-        logger.info(f"[PDF] [CONCURRENT] Starting asyncio concurrent processing...")
-        print(f"\n[PDF] Starting concurrent processing of {len(image_list)} pages (max 3 at a time)...")
-        results = await process_with_semaphore()
-        logger.info(f"[PDF] [CONCURRENT] All {len(results)} pages completed concurrently")
-        print(f"[PDF] ✓ Concurrent processing complete - All {len(results)} pages processed\n")
+        logger.info(f"[PDF] [CONCURRENT] Starting thread pool concurrent processing...")
+        print(f"\n[PDF] Starting concurrent processing of {len(image_list)} pages (max 15 workers)...")
+        
+        time_concurrent_start = time.time()
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            futures = [
+                executor.submit(process_single_page, page_no, image_bytes) 
+                for page_no, image_bytes in enumerate(image_list, start=1)
+            ]
+            logger.info(f"[PDF] [CONCURRENT] Submitted {len(futures)} pages to thread pool (15 workers)")
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        
+        time_concurrent_end = time.time()
+        
+        logger.info(f"[PDF] [CONCURRENT] All {len(results)} pages completed concurrently in {time_concurrent_end - time_concurrent_start:.2f}s")
+        print(f"[PDF] ✓ Concurrent processing complete - All {len(results)} pages processed in {time_concurrent_end - time_concurrent_start:.2f}s\n")
         
         # Aggregate results
+        time_aggregate_start = time.time()
         logger.info(f"[PDF] Aggregating results from {len(results)} concurrent tasks...")
         success_count = 0
         for result in sorted(results, key=lambda x: x['page_no']):
@@ -494,6 +513,8 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                 })
                 logger.warning(f"[PDF] [AGGREGATED] Page {result['page_no']}: No items")
         
+        time_aggregate_end = time.time()
+        logger.info(f"[PDF] [TIMING] Aggregation took {time_aggregate_end - time_aggregate_start:.2f}s")
         logger.info(f"[PDF] [AGGREGATED] Results: {success_count}/{len(results)} pages successful, {len(all_items)} total items")
         
         if not all_items:
@@ -525,19 +546,35 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
             data=extracted_data
         )
         
+        time_end = time.time()
+        total_time = time_end - time_start
+        
         logger.info(
             f"[PDF] Final response ready - Items: {len(all_items)}, Pages: {len(image_list)}, "
             f"Tokens: {total_token_usage.get('total_tokens', 0)}, Status: SUCCESS"
         )
         
-        # Print to stdout for visibility in Render logs
-        print(f"========== PDF EXTRACTION SUCCESS ==========")
+        # Print detailed timing breakdown
+        print(f"========== PDF EXTRACTION TIMING BREAKDOWN ==========")
+        print(f"PDF conversion: {time_convert_end - time_convert_start:.2f}s")
+        print(f"Concurrent processing: {time_concurrent_end - time_concurrent_start:.2f}s")
+        print(f"Aggregation: {time_aggregate_end - time_aggregate_start:.2f}s")
+        print(f"---")
+        print(f"TOTAL TIME: {total_time:.2f}s")
+        print(f"Time per page: {total_time / len(image_list):.2f}s")
+        print(f"---")
         print(f"Pages processed: {len(image_list)}")
         print(f"Total items extracted: {len(all_items)}")
         total_amount = sum(float(item.item_amount) for page in pagewise_items for item in page.bill_items)
         print(f"Total amount: {total_amount}")
         print(f"Tokens used: {total_token_usage.get('total_tokens', 0)}")
-        print(f"========== PDF RESPONSE RETURNED ==========")
+        print(f"========== PDF RESPONSE RETURNED ==========\n")
+        
+        # Log per-page timings
+        logger.info(f"[PDF] [TIMING] Per-page breakdown:")
+        for page_no in sorted(page_timings.keys()):
+            timings = page_timings[page_no]
+            logger.info(f"[PDF] [TIMING] Page {page_no}: Total {timings['total']:.2f}s (extraction: {timings['extraction_only']:.2f}s)")
         
         return response
         

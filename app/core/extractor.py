@@ -4,6 +4,7 @@ import base64
 from typing import List, Dict, Optional, Tuple
 from decimal import Decimal
 import google.generativeai as genai
+import time
 try:
     import json5
 except ImportError:
@@ -38,7 +39,7 @@ class GeminiExtractor:
                 temperature=0.0,
                 top_p=1.0,       
                 top_k=1,
-                max_output_tokens=1536  # Reduced for faster API response
+                max_output_tokens=1024  # Further reduced for speed (from 1536)
             )
         )
         
@@ -56,6 +57,8 @@ class GeminiExtractor:
             Dictionary with extracted data including usage metadata
         """
         try:
+            api_call_start = time.time()
+            
             image_base64 = base64.standard_b64encode(image_bytes).decode('utf-8')
             
             message = genai.types.ContentDict(
@@ -70,13 +73,20 @@ class GeminiExtractor:
                 ]
             )
             
-            logger.info(f"Sending page {page_no} to Gemini for extraction...")
+            logger.info(f"[API CALL] Page {page_no}: Sending to Gemini API...")
+            api_request_start = time.time()
             response = self.client.generate_content(message)
+            api_request_end = time.time()
+            logger.info(f"[API TIMING] Page {page_no}: Gemini API response took {api_request_end - api_request_start:.2f}s")
             
             response_text = response.text
             logger.debug(f"Gemini raw response: {response_text[:500]}...")
             
+            parse_start = time.time()
             extraction_result = self._parse_response(response_text)
+            parse_end = time.time()
+            logger.info(f"[PARSE TIMING] Page {page_no}: Response parsing took {parse_end - parse_start:.2f}s")
+            
             extraction_result['page_number'] = page_no
             
             if hasattr(response, 'usage_metadata'):
@@ -94,6 +104,8 @@ class GeminiExtractor:
                     'output_tokens': 0
                 }
             
+            api_call_end = time.time()
+            logger.info(f"[TOTAL TIMING] Page {page_no}: Complete extraction (API + parsing) took {api_call_end - api_call_start:.2f}s")
             logger.info(f"Page {page_no}: Extracted {len(extraction_result.get('line_items', []))} items")
             
             return extraction_result
@@ -321,6 +333,11 @@ class GeminiExtractor:
         except Exception as e:
             logger.error(f"Regex extraction error: {e}")
         
+        if result['line_items']:
+            logger.info(f"✓ Regex extraction SUCCESS: recovered {len(result['line_items'])} items, bill_total: {result['bill_total']}")
+        else:
+            logger.warning(f"✗ Regex extraction FAILED: no items found")
+        
         return result
     
     @staticmethod
@@ -352,16 +369,16 @@ class GeminiExtractor:
             except json.JSONDecodeError as parse_err:
                 logger.warning(f"✗ JSON parsing failed: {parse_err}")
                 
-                # OPTIMIZED: Try regex extraction FIRST (proven to work most reliably)
-                logger.warning("⚠ Attempting regex-based extraction (most reliable fallback)...")
+                # STEP 1: Try regex extraction FIRST (most reliable for malformed JSON)
+                logger.warning("⚠ STEP 1: Attempting regex-based extraction (fastest, most reliable)...")
                 extraction = GeminiExtractor._extract_values_safely(json_str)
                 
                 if extraction.get('line_items'):
-                    logger.info(f"✓ Regex extraction recovered {len(extraction['line_items'])} items")
+                    logger.info(f"✓ Regex extraction SUCCESS: recovered {len(extraction['line_items'])} items")
                     return extraction
                 
-                # If regex didn't work, try JSON structure fix
-                logger.warning("⚠ Regex extraction failed, attempting JSON structure fix...")
+                # STEP 2: If regex didn't work, try fixing JSON structure
+                logger.warning("⚠ STEP 2: Regex failed, attempting JSON structure fix...")
                 json_str_fixed = GeminiExtractor._fix_json_structure(json_str)
                 
                 try:
@@ -370,8 +387,8 @@ class GeminiExtractor:
                 except json.JSONDecodeError as fix_err:
                     logger.warning(f"✗ Fixed JSON still failed: {fix_err}")
                     
-                    # Try json5
-                    logger.warning("⚠ Trying json5 parser...")
+                    # STEP 3: Try json5 (lenient parser)
+                    logger.warning("⚠ STEP 3: Trying json5 parser...")
                     if json5:
                         try:
                             extraction = json5.loads(json_str)
@@ -379,8 +396,9 @@ class GeminiExtractor:
                         except Exception as e:
                             logger.debug(f"✗ json5 parsing also failed: {e}")
                     
-                    # Try aggressive repair
+                    # STEP 4: Try aggressive repair
                     if extraction is None:
+                        logger.warning("⚠ STEP 4: Attempting aggressive JSON repair...")
                         try:
                             json_str_repaired = GeminiExtractor._repair_json(json_str)
                             extraction = json.loads(json_str_repaired)
@@ -632,71 +650,10 @@ class ExtractionOrchestrator:
             
             logger.info(f"[EXTRACTOR] Phase 3: Calculated total: {calculated_total}, Bill total: {bill_total}")
             
-            if bill_total is not None:
-                is_match, discrepancy, status = self.reconciler.reconcile(
-                    calculated_total,
-                    ExtractionOrchestrator._safe_decimal_convert(bill_total, 0)
-                )
-                
-                metadata['discrepancy'] = discrepancy
-                metadata['reconciliation_status'] = status
-                
-                logger.info(f"[EXTRACTOR] Phase 3: Reconciliation - Match: {is_match}, Discrepancy: {discrepancy}, Status: {status}")
-                
-                should_retry = False  # DISABLED FOR SPEED - Priority optimization
-                
-                if should_retry:
-                    logger.info(f"[EXTRACTOR] Phase 4: Triggering retry (discrepancy: {discrepancy}, status: {status})")
-                    
-                    retry_response = self.extractor.retry_extraction(
-                        image_bytes,
-                        cleaned_items,
-                        calculated_total,
-                        ExtractionOrchestrator._safe_decimal_convert(bill_total, 0),
-                        retry_count=1
-                    )
-                    
-                    metadata['retry_attempts'] = 1
-                    logger.info(f"[EXTRACTOR] Phase 4: Retry response received")
-                    
-                    retry_usage = retry_response.get('usage_metadata', {})
-                    if retry_usage:
-                        self.total_tokens['total_tokens'] += retry_usage.get('total_tokens', 0)
-                        self.total_tokens['input_tokens'] += retry_usage.get('input_tokens', 0)
-                        self.total_tokens['output_tokens'] += retry_usage.get('output_tokens', 0)
-                        metadata['token_usage'] = {
-                            'total_tokens': self.total_tokens['total_tokens'],
-                            'input_tokens': self.total_tokens['input_tokens'],
-                            'output_tokens': self.total_tokens['output_tokens']
-                        }
-                        logger.info(f"[EXTRACTOR] Phase 4: Retry tokens - Total: {retry_usage.get('total_tokens', 0)}")
-                    
-                    if retry_response.get('corrections'):
-                        logger.info(f"[EXTRACTOR] Phase 4: Applying {len(retry_response['corrections'])} corrections")
-                        cleaned_items = self._apply_corrections(
-                            cleaned_items,
-                            retry_response['corrections']
-                        )
-                        
-                        calculated_total = ReconciliationEngine.sum_line_items(cleaned_items)
-                        is_match, discrepancy, status = self.reconciler.reconcile(
-                            calculated_total,
-                            ExtractionOrchestrator._safe_decimal_convert(bill_total, 0)
-                        )
-                        
-                        metadata['discrepancy'] = discrepancy
-                        metadata['reconciliation_status'] = status
-                        metadata['warnings'].append(
-                            f"Applied {len(retry_response['corrections'])} corrections from retry"
-                        )
-                        logger.info(f"[EXTRACTOR] Phase 4: After corrections - New discrepancy: {discrepancy}, Status: {status}")
-                    else:
-                        logger.warning(f"[EXTRACTOR] Phase 4: Retry returned no corrections")
-                else:
-                    logger.info(f"[EXTRACTOR] Phase 3: No retry needed - Match: {is_match}")
-            
+            # SKIP RECONCILIATION for speed - return immediately
+            metadata['reconciliation_status'] = 'skipped_for_speed'
             metadata['extraction_confidence'] = 0.95
-            logger.info(f"[EXTRACTOR] Extraction complete - Items: {len(cleaned_items)}, Total: {calculated_total}, Status: {metadata['reconciliation_status']}")
+            logger.info(f"[EXTRACTOR] Extraction complete - Items: {len(cleaned_items)}, Total: {calculated_total}, Status: SPEED_OPTIMIZED")
             
             return cleaned_items, calculated_total, metadata
             
