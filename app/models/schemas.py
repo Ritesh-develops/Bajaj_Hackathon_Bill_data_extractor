@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Optional
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+from typing import List, Optional, Union
 from decimal import Decimal
 
 class BillItemRequest(BaseModel):
@@ -10,9 +10,25 @@ class BillItemRequest(BaseModel):
 class BillItem(BaseModel):
     """Individual line item in a bill"""
     item_name: str = Field(..., description="Exactly as mentioned in the bill")
-    item_amount: Decimal = Field(..., description="Net Amount of the item post discounts as mentioned in the bill")
-    item_rate: Decimal = Field(..., description="Exactly as mentioned in the bill")
-    item_quantity: Decimal = Field(..., description="Quantity of the item")
+    item_amount: Union[Decimal, float, int, str] = Field(..., description="Net Amount of the item post discounts as mentioned in the bill")
+    item_rate: Union[Decimal, float, int, str] = Field(..., description="Exactly as mentioned in the bill")
+    item_quantity: Union[Decimal, float, int, str] = Field(..., description="Quantity of the item")
+
+    @field_validator('item_amount', 'item_rate', 'item_quantity', mode='before')
+    @classmethod
+    def convert_to_decimal(cls, v):
+        """Convert any numeric type or string to Decimal"""
+        if v is None:
+            return Decimal('0')
+        try:
+            # Handle string with commas or spaces
+            if isinstance(v, str):
+                v = v.strip().replace(',', '').replace(' ', '')
+                if not v:
+                    return Decimal('0')
+            return Decimal(str(v))
+        except Exception:
+            return Decimal('0')
 
     class Config:
         json_encoders = {
