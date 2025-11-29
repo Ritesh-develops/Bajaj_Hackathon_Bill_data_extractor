@@ -601,7 +601,7 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
     """
     Convert PDF to list of image bytes (one per page)
     
-    Tries pdf2image first, falls back to PyMuPDF if available.
+    Uses PyMuPDF (fitz) - no external dependencies needed.
     
     Args:
         pdf_bytes: PDF file bytes
@@ -641,62 +641,14 @@ def convert_pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
         logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages using PyMuPDF")
         return image_bytes_list
         
-    except ImportError:
-        logger.info("PyMuPDF not available, trying pdf2image + Poppler...")
-        try:
-            import pdf2image
-            from PIL import Image
-            
-            logger.info("Using pdf2image for PDF conversion...")
-            images = pdf2image.convert_from_bytes(pdf_bytes, fmt='png')
-            
-            if not images:
-                raise ValueError("No pages found in PDF or PDF is invalid/corrupted")
-            
-            logger.info(f"Converted {len(images)} pages from PDF using pdf2image")
-            
-            image_bytes_list = []
-            for idx, img in enumerate(images):
-                try:
-                    img_bytes = io.BytesIO()
-                    img.save(img_bytes, format='PNG')
-                    image_bytes_list.append(img_bytes.getvalue())
-                    logger.info(f"Converted page {idx + 1} to PNG ({len(img_bytes.getvalue())} bytes)")
-                except Exception as e:
-                    logger.error(f"Error converting page {idx + 1} to PNG: {e}")
-                    raise ValueError(f"Failed to convert page {idx + 1} to PNG: {e}")
-            
-            logger.info(f"Successfully converted {len(image_bytes_list)} PDF pages to images")
-            return image_bytes_list
-            
-        except ImportError:
-            error_msg = (
-                "PDF conversion requires PyMuPDF. Install with:\n"
-                "  pip install PyMuPDF"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-        except Exception as e:
-            error_msg = (
-                f"Failed to convert PDF with pdf2image: {e}\n"
-                "Please ensure Poppler is installed and in PATH, or use PyMuPDF instead:\n"
-                "  pip install PyMuPDF"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+    except ImportError as e:
+        error_msg = (
+            "PyMuPDF is required for PDF conversion and is not installed.\n"
+            "Install with: pip install PyMuPDF\n"
+            "This is the recommended PDF library - no external Poppler needed."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     except Exception as e:
-        logger.error(f"Error converting PDF with PyMuPDF: {e}", exc_info=True)
+        logger.error(f"Error converting PDF: {e}", exc_info=True)
         raise ValueError(f"Failed to convert PDF to images: {e}")
-        if "poppler" in str(e).lower() or "not found" in str(e).lower():
-            error_msg = (
-                "Poppler is not installed or not in PATH.\n"
-                "Solutions:\n"
-                "  1. Install PyMuPDF (easiest, no setup): pip install PyMuPDF\n"
-                "  2. Download Poppler manually: https://github.com/oschwartz10612/poppler-windows/releases/\n"
-                "  3. See POPPLER_INSTALLATION_GUIDE.md for detailed instructions"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-        else:
-            logger.error(f"Unexpected error converting PDF: {e}", exc_info=True)
-            raise ValueError(f"Failed to convert PDF to images: {e}")
