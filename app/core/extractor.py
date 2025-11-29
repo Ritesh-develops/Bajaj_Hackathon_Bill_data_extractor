@@ -4,6 +4,10 @@ import base64
 from typing import List, Dict, Optional, Tuple
 from decimal import Decimal
 import google.generativeai as genai
+try:
+    import json5
+except ImportError:
+    json5 = None
 from app.config import GEMINI_API_KEY, LLM_MODEL, MAX_RETRY_ATTEMPTS, RECONCILIATION_THRESHOLD, MIN_DISCREPANCY_FOR_RETRY
 from app.models.prompts import (
     EXTRACTION_SYSTEM_PROMPT,
@@ -99,8 +103,34 @@ class GeminiExtractor:
             raise
     
     @staticmethod
+    def _repair_json(json_str: str) -> str:
+        """Repair common JSON malformations from Gemini"""
+        # Remove trailing commas
+        json_str = json_str.replace(',]', ']').replace(',}', '}')
+        
+        # Try to fix common quote issues - replace problematic quote patterns
+        # This handles cases where Gemini puts unescaped quotes in string values
+        import re
+        
+        # Simple approach: just remove extra quotes or escape them
+        # Find patterns like: "key": "value with "quote" inside"
+        # and try to escape the inner quotes
+        lines = json_str.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # If line has quotes and looks like it has unescaped inner quotes
+            if '":' in line and line.count('"') > 4:  # Likely has extra quotes
+                # Try to escape any problematic quote sequences
+                line = line.replace('": "', '": "').replace('" "', '" "')
+            fixed_lines.append(line)
+        
+        json_str = '\n'.join(fixed_lines)
+        return json_str
+    
+    @staticmethod
     def _parse_response(response_text: str) -> Dict:
-        """Parse Gemini response and extract JSON with recovery"""
+        """Parse Gemini response and extract JSON with aggressive recovery"""
         try:
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
@@ -115,24 +145,57 @@ class GeminiExtractor:
                 }
             
             json_str = response_text[start_idx:end_idx]
+            extraction = None
             
             # Try standard JSON parsing first
             try:
                 extraction = json.loads(json_str)
+                logger.info("JSON parsed successfully on first try")
             except json.JSONDecodeError as parse_err:
-                # JSON is malformed - attempt recovery
-                logger.warning(f"JSON parsing failed, attempting recovery: {parse_err}")
+                logger.warning(f"JSON parsing failed: {parse_err}")
                 
-                # Remove trailing commas in arrays/objects
-                json_str_fixed = json_str.replace(',]', ']').replace(',}', '}')
+                # Fallback 1: Try json5 (handles more lenient JSON)
+                if json5:
+                    try:
+                        extraction = json5.loads(json_str)
+                        logger.info("Successfully parsed with json5 (lenient JSON parser)")
+                    except Exception as e:
+                        logger.debug(f"json5 parsing also failed: {e}")
                 
-                # Try parsing recovered JSON
-                try:
-                    extraction = json.loads(json_str_fixed)
-                    logger.info("Successfully recovered from malformed JSON")
-                except json.JSONDecodeError:
-                    # If recovery fails, return empty extraction
-                    logger.error(f"Could not recover JSON after malformed parse: {parse_err}")
+                # Fallback 2: Attempt repair with trailing comma fix
+                if extraction is None:
+                    try:
+                        json_str_fixed = GeminiExtractor._repair_json(json_str)
+                        extraction = json.loads(json_str_fixed)
+                        logger.info("Successfully recovered from malformed JSON after repair")
+                    except json.JSONDecodeError:
+                        logger.warning("Repair attempt failed")
+                
+                # Fallback 3: Direct array extraction
+                if extraction is None:
+                    logger.warning("Trying direct extraction of line_items array...")
+                    line_items_match = response_text.find('"line_items"')
+                    if line_items_match != -1:
+                        try:
+                            array_start = response_text.find('[', line_items_match)
+                            array_end = response_text.find(']', array_start) + 1
+                            if array_start != -1 and array_end > array_start:
+                                line_items_str = response_text[array_start:array_end]
+                                line_items = json.loads(line_items_str)
+                                logger.info(f"Extracted {len(line_items)} items directly from malformed JSON")
+                                return {
+                                    'extraction_reasoning': '',
+                                    'line_items': line_items,
+                                    'bill_total': None,
+                                    'subtotals': [],
+                                    'notes': 'Extracted from partial parse of malformed JSON'
+                                }
+                        except Exception as e:
+                            logger.debug(f"Direct extraction failed: {e}")
+                
+                # If all recovery attempts fail
+                if extraction is None:
+                    logger.error(f"Could not recover JSON after all attempts: {parse_err}")
                     return {
                         'line_items': [],
                         'bill_total': None,
@@ -140,13 +203,21 @@ class GeminiExtractor:
                         'notes': f'JSON parsing failed - could not recover: {parse_err}'
                     }
             
-            return {
-                'extraction_reasoning': extraction.get('extraction_reasoning', ''),
-                'line_items': extraction.get('line_items', []),
-                'bill_total': extraction.get('bill_total'),
-                'subtotals': extraction.get('subtotals', []),
-                'notes': extraction.get('notes', '')
-            }
+            if extraction:
+                return {
+                    'extraction_reasoning': extraction.get('extraction_reasoning', ''),
+                    'line_items': extraction.get('line_items', []),
+                    'bill_total': extraction.get('bill_total'),
+                    'subtotals': extraction.get('subtotals', []),
+                    'notes': extraction.get('notes', '')
+                }
+            else:
+                return {
+                    'line_items': [],
+                    'bill_total': None,
+                    'subtotals': [],
+                    'notes': 'Failed to parse JSON'
+                }
             
         except Exception as e:
             logger.error(f"Unexpected error in JSON parsing: {e}")
@@ -242,6 +313,7 @@ class GeminiExtractor:
             }
     
     @staticmethod
+    @staticmethod
     def _parse_retry_response(response_text: str) -> Dict:
         """Parse retry response from Gemini with recovery"""
         try:
@@ -252,16 +324,28 @@ class GeminiExtractor:
                 return {'corrections': [], 'new_total': 0, 'confidence': 0.0}
             
             json_str = response_text[start_idx:end_idx]
+            retry_response = None
             
             # Try standard JSON parsing first
             try:
                 retry_response = json.loads(json_str)
             except json.JSONDecodeError:
-                # Attempt recovery from malformed JSON
-                json_str = json_str.replace(',]', ']').replace(',}', '}')
-                try:
-                    retry_response = json.loads(json_str)
-                except json.JSONDecodeError:
+                # Fallback 1: Try json5
+                if json5:
+                    try:
+                        retry_response = json5.loads(json_str)
+                    except Exception:
+                        pass
+                
+                # Fallback 2: Repair trailing commas
+                if retry_response is None:
+                    try:
+                        json_str_fixed = json_str.replace(',]', ']').replace(',}', '}')
+                        retry_response = json.loads(json_str_fixed)
+                    except json.JSONDecodeError:
+                        pass
+                
+                if retry_response is None:
                     return {'corrections': [], 'new_total': 0, 'confidence': 0.0}
             
             return {
