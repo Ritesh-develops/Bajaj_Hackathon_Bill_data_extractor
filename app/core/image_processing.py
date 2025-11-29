@@ -170,8 +170,8 @@ class ImageProcessor:
             raise
     
     @staticmethod
-    def image_to_bytes(image: np.ndarray, format: str = 'jpeg', quality: int = 90) -> bytes:
-        """Convert OpenCV image to bytes (JPEG for faster processing)"""
+    def image_to_bytes(image: np.ndarray, format: str = 'jpeg', quality: int = 70) -> bytes:
+        """Convert OpenCV image to bytes (JPEG quality 70 for faster Gemini processing)"""
         if format.lower() == 'jpeg':
             _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, quality])
         else:

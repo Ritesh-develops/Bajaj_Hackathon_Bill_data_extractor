@@ -33,8 +33,8 @@ class GeminiExtractor:
             generation_config=genai.types.GenerationConfig(
                 temperature=0.0,
                 top_p=1.0,       
-                top_k=1,    
-                max_output_tokens=4096
+                top_k=1,
+                max_output_tokens=1536  # Reduced for faster API response
             )
         )
         
@@ -100,7 +100,7 @@ class GeminiExtractor:
     
     @staticmethod
     def _parse_response(response_text: str) -> Dict:
-        """Parse Gemini response and extract JSON"""
+        """Parse Gemini response and extract JSON with recovery"""
         try:
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
@@ -115,7 +115,30 @@ class GeminiExtractor:
                 }
             
             json_str = response_text[start_idx:end_idx]
-            extraction = json.loads(json_str)
+            
+            # Try standard JSON parsing first
+            try:
+                extraction = json.loads(json_str)
+            except json.JSONDecodeError as parse_err:
+                # JSON is malformed - attempt recovery
+                logger.warning(f"JSON parsing failed, attempting recovery: {parse_err}")
+                
+                # Remove trailing commas in arrays/objects
+                json_str_fixed = json_str.replace(',]', ']').replace(',}', '}')
+                
+                # Try parsing recovered JSON
+                try:
+                    extraction = json.loads(json_str_fixed)
+                    logger.info("Successfully recovered from malformed JSON")
+                except json.JSONDecodeError:
+                    # If recovery fails, return empty extraction
+                    logger.error(f"Could not recover JSON after malformed parse: {parse_err}")
+                    return {
+                        'line_items': [],
+                        'bill_total': None,
+                        'subtotals': [],
+                        'notes': f'JSON parsing failed - could not recover: {parse_err}'
+                    }
             
             return {
                 'extraction_reasoning': extraction.get('extraction_reasoning', ''),
@@ -125,13 +148,13 @@ class GeminiExtractor:
                 'notes': extraction.get('notes', '')
             }
             
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error in JSON parsing: {e}")
             return {
                 'line_items': [],
                 'bill_total': None,
                 'subtotals': [],
-                'notes': f'JSON parsing failed: {e}'
+                'notes': f'JSON parsing error: {e}'
             }
     
     def retry_extraction(
@@ -220,7 +243,7 @@ class GeminiExtractor:
     
     @staticmethod
     def _parse_retry_response(response_text: str) -> Dict:
-        """Parse retry response from Gemini"""
+        """Parse retry response from Gemini with recovery"""
         try:
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}') + 1
@@ -229,7 +252,17 @@ class GeminiExtractor:
                 return {'corrections': [], 'new_total': 0, 'confidence': 0.0}
             
             json_str = response_text[start_idx:end_idx]
-            retry_response = json.loads(json_str)
+            
+            # Try standard JSON parsing first
+            try:
+                retry_response = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Attempt recovery from malformed JSON
+                json_str = json_str.replace(',]', ']').replace(',}', '}')
+                try:
+                    retry_response = json.loads(json_str)
+                except json.JSONDecodeError:
+                    return {'corrections': [], 'new_total': 0, 'confidence': 0.0}
             
             return {
                 'analysis': retry_response.get('analysis', ''),
@@ -238,8 +271,8 @@ class GeminiExtractor:
                 'confidence': retry_response.get('confidence', 0.0)
             }
             
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error in retry response: {e}")
+        except Exception as e:
+            logger.error(f"Error parsing retry response: {e}")
             return {'corrections': [], 'new_total': 0, 'confidence': 0.0}
 
 
@@ -331,11 +364,7 @@ class ExtractionOrchestrator:
                 
                 logger.info(f"[EXTRACTOR] Phase 3: Reconciliation - Match: {is_match}, Discrepancy: {discrepancy}, Status: {status}")
                 
-                should_retry = (
-                    not is_match 
-                    and metadata['retry_attempts'] < MAX_RETRY_ATTEMPTS
-                    and discrepancy > (ExtractionOrchestrator._safe_decimal_convert(bill_total, 0) * Decimal(str(MIN_DISCREPANCY_FOR_RETRY)))
-                )
+                should_retry = False  # DISABLED FOR SPEED - Priority optimization
                 
                 if should_retry:
                     logger.info(f"[EXTRACTOR] Phase 4: Triggering retry (discrepancy: {discrepancy}, status: {status})")

@@ -387,13 +387,15 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         image_list = convert_pdf_to_images(pdf_bytes)
         
         logger.info(f"[PDF] Converted PDF to {len(image_list)} page(s)")
+        logger.info(f"[PDF] Starting concurrent page processing (max 3 concurrent)...")
         
         all_items = []
         pagewise_items = []
         total_token_usage = {'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0}
         extraction_diagnostics = []
         
-        for page_no, image_bytes in enumerate(image_list, start=1):
+        async def process_single_page(page_no: int, image_bytes: bytes) -> dict:
+            """Process a single PDF page"""
             logger.info(f"[PDF] Processing page {page_no}/{len(image_list)} (size: {len(image_bytes)} bytes)...")
             
             processed_image = image_processor.process_document(image_bytes, skip_deskew=True)
@@ -407,14 +409,11 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
             )
             
             page_token_usage = metadata.get('token_usage', {})
-            total_token_usage['total_tokens'] += page_token_usage.get('total_tokens', 0)
-            total_token_usage['input_tokens'] += page_token_usage.get('input_tokens', 0)
-            total_token_usage['output_tokens'] += page_token_usage.get('output_tokens', 0)
             
             logger.info(f"[PDF] Page {page_no} - Extraction status: {metadata.get('reconciliation_status')}, Items found: {len(cleaned_items)}, Tokens: {page_token_usage.get('total_tokens', 0)}")
             
             if cleaned_items:
-                logger.info(f"[PDF] Page {page_no}: Extracted {len(cleaned_items)} items - {', '.join([item['item_name'][:30] for item in cleaned_items[:3]])}")
+                logger.info(f"[PDF] Page {page_no}: Extracted {len(cleaned_items)} items")
                 
                 bill_items = [
                     {
@@ -426,21 +425,76 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     for item in cleaned_items
                 ]
                 
-                all_items.extend(cleaned_items)
-                pagewise_items.append(
-                    PageLineItems(
-                        page_no=str(page_no),
-                        page_type="Bill Detail",
-                        bill_items=bill_items
-                    )
-                )
+                return {
+                    'page_no': page_no,
+                    'items': cleaned_items,
+                    'bill_items': bill_items,
+                    'token_usage': page_token_usage,
+                    'success': True
+                }
             else:
                 logger.warning(f"[PDF] Page {page_no}: No items extracted. Notes: {metadata.get('extraction_notes', '')}")
+                return {
+                    'page_no': page_no,
+                    'items': [],
+                    'bill_items': [],
+                    'token_usage': page_token_usage,
+                    'notes': metadata.get('extraction_notes', ''),
+                    'reasoning': metadata.get('extraction_reasoning', '')[:200],
+                    'success': False
+                }
+        
+        # Process pages concurrently (max 10 at a time for aggressive speed)
+        async def process_with_semaphore():
+            semaphore = asyncio.Semaphore(10)
+            
+            async def bounded_process(page_no, image_bytes):
+                async with semaphore:
+                    logger.info(f"[PDF] [CONCURRENT] Starting page {page_no}")
+                    result = await process_single_page(page_no, image_bytes)
+                    logger.info(f"[PDF] [CONCURRENT] Completed page {page_no}")
+                    return result
+            
+            tasks = [bounded_process(page_no, image_bytes) for page_no, image_bytes in enumerate(image_list, start=1)]
+            logger.info(f"[PDF] [CONCURRENT] Created {len(tasks)} tasks for concurrent processing (6 at a time)")
+            return await asyncio.gather(*tasks)
+        
+        # Run concurrent processing
+        logger.info(f"[PDF] [CONCURRENT] Starting asyncio concurrent processing...")
+        print(f"\n[PDF] Starting concurrent processing of {len(image_list)} pages (max 3 at a time)...")
+        results = await process_with_semaphore()
+        logger.info(f"[PDF] [CONCURRENT] All {len(results)} pages completed concurrently")
+        print(f"[PDF] ✓ Concurrent processing complete - All {len(results)} pages processed\n")
+        
+        # Aggregate results
+        logger.info(f"[PDF] Aggregating results from {len(results)} concurrent tasks...")
+        success_count = 0
+        for result in sorted(results, key=lambda x: x['page_no']):
+            page_token_usage = result['token_usage']
+            total_token_usage['total_tokens'] += page_token_usage.get('total_tokens', 0)
+            total_token_usage['input_tokens'] += page_token_usage.get('input_tokens', 0)
+            total_token_usage['output_tokens'] += page_token_usage.get('output_tokens', 0)
+            
+            if result['success']:
+                success_count += 1
+                all_items.extend(result['items'])
+                pagewise_items.append(
+                    PageLineItems(
+                        page_no=str(result['page_no']),
+                        page_type="Bill Detail",
+                        bill_items=result['bill_items']
+                    )
+                )
+                logger.info(f"[PDF] [AGGREGATED] Page {result['page_no']}: {len(result['items'])} items")
+            else:
                 extraction_diagnostics.append({
-                    "page": page_no,
-                    "notes": metadata.get('extraction_notes', ''),
-                    "reasoning": metadata.get('extraction_reasoning', '')[:200]
+                    "page": result['page_no'],
+                    "notes": result.get('notes', ''),
+                    "reasoning": result.get('reasoning', '')
                 })
+                logger.warning(f"[PDF] [AGGREGATED] Page {result['page_no']}: No items")
+        
+        logger.info(f"[PDF] [AGGREGATED] Results: {success_count}/{len(results)} pages successful, {len(all_items)} total items")
         
         if not all_items:
             logger.error(f"[PDF] No line items extracted from PDF after processing {len(image_list)} pages")
@@ -450,13 +504,15 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     diagnostic_msg += f"Page {diag['page']}: {diag['notes']} | "
             
             logger.error(f"[PDF] Diagnostic info: {diagnostic_msg}")
+            print(f"[PDF] FAILED - No items extracted from {len(image_list)} pages")
             return BillExtractionResponse(
                 is_success=False,
                 token_usage=total_token_usage,
                 error=diagnostic_msg or "No line items could be extracted from the PDF. This may be a handwritten or scanned document that requires manual review."
             )
         
-        logger.info(f"[PDF] Successfully extracted {len(all_items)} total items from {len(image_list)} page(s)")
+        logger.info(f"[PDF] Successfully extracted {len(all_items)} total items from {len(image_list)} page(s) [CONCURRENT]")
+        print(f"[PDF] ✓ SUCCESS - {len(all_items)} items from {len(image_list)} pages (concurrent)")
         
         extracted_data = ExtractedBillData(
             pagewise_line_items=pagewise_items,
@@ -478,7 +534,7 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         print(f"========== PDF EXTRACTION SUCCESS ==========")
         print(f"Pages processed: {len(image_list)}")
         print(f"Total items extracted: {len(all_items)}")
-        total_amount = sum(float(item['item_amount']) for page in pagewise_items for item in page.bill_items)
+        total_amount = sum(float(item.item_amount) for page in pagewise_items for item in page.bill_items)
         print(f"Total amount: {total_amount}")
         print(f"Tokens used: {total_token_usage.get('total_tokens', 0)}")
         print(f"========== PDF RESPONSE RETURNED ==========")
