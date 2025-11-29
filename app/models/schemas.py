@@ -9,10 +9,10 @@ class BillItemRequest(BaseModel):
 
 class BillItem(BaseModel):
     """Individual line item in a bill"""
-    item_name: str = Field(..., description="Name of the item")
+    item_name: str = Field(..., description="Exactly as mentioned in the bill")
+    item_amount: Decimal = Field(..., description="Net Amount of the item post discounts as mentioned in the bill")
+    item_rate: Decimal = Field(..., description="Exactly as mentioned in the bill")
     item_quantity: Decimal = Field(..., description="Quantity of the item")
-    item_rate: Decimal = Field(..., description="Unit rate/price of the item")
-    item_amount: Decimal = Field(..., description="Total amount for this line item (quantity * rate)")
 
     class Config:
         json_encoders = {
