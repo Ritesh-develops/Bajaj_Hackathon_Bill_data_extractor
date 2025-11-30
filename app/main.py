@@ -55,5 +55,7 @@ if __name__ == "__main__":
         app,
         host=API_HOST,
         port=API_PORT,
-        log_level=logging.getLogger().level
+        log_level=logging.getLogger().level,
+        timeout_keep_alive=120,  # Keep connection alive longer
+        timeout_notify=120       # Notify timeout for long-running requests
     )

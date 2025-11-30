@@ -39,7 +39,7 @@ class GeminiExtractor:
                 temperature=0.0,
                 top_p=1.0,       
                 top_k=1,
-                max_output_tokens=2048  # Increased for paid tier - better accuracy with fewer retries
+                max_output_tokens=3000  # Increased from 2048 for richer extraction responses
             )
         )
         
@@ -48,11 +48,11 @@ class GeminiExtractor:
     @staticmethod
     def _validate_extracted_items(line_items: List[Dict], bill_total: Optional[float] = None) -> Tuple[List[Dict], Dict]:
         """
-        Validate and clean extracted items with confidence scoring
+        Validate and clean extracted items with confidence scoring and outlier detection
         
         Returns:
             - cleaned_items: validated line items
-            - validation_report: accuracy metrics
+            - validation_report: accuracy metrics with outlier flagging
         """
         validation_report = {
             'total_items': len(line_items),
@@ -60,11 +60,45 @@ class GeminiExtractor:
             'invalid_items': 0,
             'items_with_zero_amount': 0,
             'suspicious_items': [],
+            'outlier_items': [],
             'accuracy_score': 0.0,
             'issues': []
         }
         
         cleaned_items = []
+        
+        # Calculate statistics for outlier detection
+        amounts = []
+        quantities = []
+        for item in line_items:
+            if isinstance(item, dict):
+                try:
+                    amt = float(item.get('item_amount') or item.get('amount', 0))
+                    qty = float(item.get('item_quantity') or item.get('quantity', 1))
+                    if amt > 0:
+                        amounts.append(amt)
+                    if qty > 0 and qty < 10000:  # Skip obviously wrong values
+                        quantities.append(qty)
+                except (ValueError, TypeError):
+                    pass
+        
+        # Calculate IQR for outlier detection
+        if amounts:
+            amounts_sorted = sorted(amounts)
+            median_amount = amounts_sorted[len(amounts_sorted) // 2]
+            q3_idx = (3 * len(amounts_sorted)) // 4
+            q3 = amounts_sorted[q3_idx] if q3_idx < len(amounts_sorted) else amounts_sorted[-1]
+            iqr = max(q3 - (amounts_sorted[len(amounts_sorted) // 4] if len(amounts_sorted) // 4 < len(amounts_sorted) else 0), 1)
+            outlier_threshold = q3 + (1.5 * iqr)
+        else:
+            outlier_threshold = float('inf')
+        
+        if quantities:
+            quantities_sorted = sorted(quantities)
+            median_qty = quantities_sorted[len(quantities_sorted) // 2]
+            qty_outlier_threshold = max(median_qty * 50, 500)  # Flag if qty > 50x median
+        else:
+            qty_outlier_threshold = float('inf')
         
         for idx, item in enumerate(line_items):
             if not item or not isinstance(item, dict):
@@ -97,6 +131,30 @@ class GeminiExtractor:
                 validation_report['issues'].append(f"Item {idx} ({item_name}): Zero amount and quantity")
                 continue
             
+            confidence = 0.95
+            
+            # Check for outlier quantities (possible OCR errors like "2001" instead of "2")
+            if quantity > qty_outlier_threshold:
+                validation_report['outlier_items'].append({
+                    'item': item_name[:50],
+                    'quantity': quantity,
+                    'threshold': qty_outlier_threshold,
+                    'reason': 'Suspiciously high quantity (likely OCR error)'
+                })
+                logger.warning(f"🚨 OUTLIER QTY: {item_name[:50]} - qty={quantity} (threshold: {qty_outlier_threshold})")
+                confidence = 0.4  # Very low confidence for quantity outliers
+            
+            # Check for outlier amounts
+            if amount > outlier_threshold and outlier_threshold != float('inf'):
+                validation_report['outlier_items'].append({
+                    'item': item_name[:50],
+                    'amount': amount,
+                    'threshold': outlier_threshold,
+                    'reason': 'Suspiciously high amount (IQR-based outlier)'
+                })
+                logger.warning(f"🚨 OUTLIER AMT: {item_name[:50]} - ${amount} (threshold: ${outlier_threshold:.2f})")
+                confidence = min(confidence, 0.5)
+            
             # Verify math: quantity × rate should equal amount
             if quantity > 0 and rate > 0 and amount > 0:
                 calculated_amount = quantity * rate
@@ -105,13 +163,13 @@ class GeminiExtractor:
                 
                 if difference > tolerance:
                     validation_report['suspicious_items'].append({
-                        'item': item_name,
+                        'item': item_name[:50],
                         'calculated': calculated_amount,
                         'actual': amount,
                         'difference': difference
                     })
-                    logger.warning(f"Item math mismatch: {item_name} - calc:{calculated_amount}, actual:{amount}")
-                    # Still include but flag as suspicious
+                    logger.warning(f"⚠️ MATH ERROR: {item_name[:50]} - calc:{calculated_amount}, actual:{amount}")
+                    confidence = min(confidence, 0.75)
             
             # Clean and add item with proper key names
             cleaned_item = {
@@ -119,21 +177,26 @@ class GeminiExtractor:
                 'item_quantity': quantity,
                 'item_rate': rate,
                 'item_amount': amount,
-                'confidence': 0.95 if not validation_report['suspicious_items'] else 0.75
+                'confidence': confidence
             }
             cleaned_items.append(cleaned_item)
             validation_report['valid_items'] += 1
         
-        # Calculate accuracy score
+        # Calculate accuracy score with outlier penalty
         total = validation_report['total_items']
         if total > 0:
-            accuracy_score = (validation_report['valid_items'] - len(validation_report['suspicious_items']) * 0.2) / total
+            outlier_penalty = len(validation_report['outlier_items']) * 0.30
+            suspicious_penalty = len(validation_report['suspicious_items']) * 0.15
+            accuracy_score = (validation_report['valid_items'] - outlier_penalty - suspicious_penalty) / total
             validation_report['accuracy_score'] = max(0, min(1.0, accuracy_score))  # Clamp to 0-1
         
+        if validation_report['outlier_items']:
+            logger.warning(f"⚠️ OUTLIERS DETECTED: {len(validation_report['outlier_items'])} items flagged as suspicious")
+        
         if validation_report['accuracy_score'] >= 0.8:
-            logger.info(f"✓ Extraction accuracy: {validation_report['accuracy_score']:.1%}")
+            logger.info(f"✓ Extraction accuracy: {validation_report['accuracy_score']:.1%} ({validation_report['valid_items']} valid items)")
         else:
-            logger.warning(f"⚠ Low extraction accuracy: {validation_report['accuracy_score']:.1%} - {validation_report['issues']}")
+            logger.warning(f"⚠️ Low accuracy: {validation_report['accuracy_score']:.1%} - Outliers: {len(validation_report['outlier_items'])}")
         
         return cleaned_items, validation_report
     
