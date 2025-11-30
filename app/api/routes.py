@@ -346,7 +346,6 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
             f"Tokens: {metadata.get('token_usage', {}).get('total_tokens', 0)}, Status: SUCCESS"
         )
         
-        # Print to stdout for visibility in Render logs
         print(f"========== IMAGE EXTRACTION SUCCESS ==========")
         print(f"Items extracted: {len(cleaned_items)}")
         print(f"Total amount: {sum(float(item['item_amount']) for item in bill_items)}")
@@ -354,7 +353,6 @@ async def process_image_extraction(image_bytes: bytes) -> BillExtractionResponse
         print(f"Tokens used: {metadata.get('token_usage', {}).get('total_tokens', 0)}")
         print(f"========== RESPONSE RETURNED ==========")
         
-        # Log exact JSON response for agent visibility
         import json
         response_dict = response.model_dump(by_alias=True)
         response_json = json.dumps(response_dict, indent=2, default=str)
@@ -474,7 +472,6 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
                     'success': False
                 }
         
-        # Process pages with thread pool for true parallelism (Gemini API is blocking I/O)
         import concurrent.futures
         
         logger.info(f"[PDF] [CONCURRENT] Starting thread pool concurrent processing...")
@@ -495,7 +492,6 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
         logger.info(f"[PDF] [CONCURRENT] All {len(results)} pages completed concurrently in {time_concurrent_end - time_concurrent_start:.2f}s")
         print(f"[PDF] ✓ Concurrent processing complete - All {len(results)} pages processed in {time_concurrent_end - time_concurrent_start:.2f}s\n")
         
-        # Aggregate results
         time_aggregate_start = time.time()
         logger.info(f"[PDF] Aggregating results from {len(results)} concurrent tasks...")
         success_count = 0
@@ -565,7 +561,6 @@ async def process_pdf_extraction(pdf_bytes: bytes) -> BillExtractionResponse:
             f"Tokens: {total_token_usage.get('total_tokens', 0)}, Status: SUCCESS"
         )
         
-        # Print detailed timing breakdown
         print(f"========== PDF EXTRACTION TIMING BREAKDOWN ==========")
         print(f"PDF conversion: {time_convert_end - time_convert_start:.2f}s")
         print(f"Concurrent processing: {time_concurrent_end - time_concurrent_start:.2f}s")

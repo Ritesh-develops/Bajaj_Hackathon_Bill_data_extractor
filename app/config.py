@@ -7,10 +7,10 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8000))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")  # Best working model
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash") 
 
 MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", 20 * 1024 * 1024)) 
-TARGET_DPI = int(os.getenv("TARGET_DPI", 400))  # Increased from 300 for better OCR
+TARGET_DPI = int(os.getenv("TARGET_DPI", 400)) 
 MIN_RESOLUTION = int(os.getenv("MIN_RESOLUTION", 800))
 
 RECONCILIATION_THRESHOLD = float(os.getenv("RECONCILIATION_THRESHOLD", 0.01)) 

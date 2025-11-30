@@ -12,7 +12,6 @@ def safe_decimal_convert(value, default=0):
     if value is None:
         return Decimal(str(default))
     try:
-        # Handle string with commas or spaces
         if isinstance(value, str):
             value = value.strip().replace(',', '').replace(' ', '')
             if not value:
